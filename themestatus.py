@@ -11,9 +11,9 @@ def main():
     parser = argparse.ArgumentParser(description='Checking MythTV theme progress / completeness')
     parser.add_argument('-s', '--source-dir', dest='sourceDir', help='directory of MythTV sources to parse')
     parser.add_argument('-t', '--theme-dir', dest='themeDir', help='directory of a MythTV theme to parse')
-    parser.add_argument('--source-file', dest='sourceFile', help='file name of dumped MythTV source parsing results')
-    parser.add_argument('--theme-file', dest='themeFile', help='file name of dumped MythTV theme parsing results')
-    parser.add_argument('-d', '--dump', dest='dumpResults', action='store_true', help='dump parsing results to json encoded file')
+    parser.add_argument('--source-file', dest='sourceFile', help='file name of cached MythTV source parsing results')
+    parser.add_argument('--theme-file', dest='themeFile', help='file name of cached MythTV theme parsing results')
+    parser.add_argument('-d', '--dump', dest='dumpResults', action='store_true', help='dump parsing results to json encoded cache file')
     parser.add_argument('-v', '--verbose', dest='verbose', nargs='?', const='all', help='show verbose output, specify \'source\', \'theme\',  \'missing\' or \'all\' to constrain output to print corresponding theme windows lists')
     args = parser.parse_args()
     if not args.verbose:
@@ -21,6 +21,12 @@ def main():
     elif 'all' in args.verbose:
         args.verbose = ('source', 'theme', 'missing')
 
+    if not args.sourceDir and not args.sourceFile:
+        print("Please specify a source directory or source cache file")
+        sys.exit(1)
+    if not args.themeDir and not args.themeFile:
+        print("Please specify a theme directory or theme cache file")
+        sys.exit(2)
     if args.sourceDir and not os.path.exists(args.sourceDir):
         print("Specified source directory does not exists: " + args.sourceDir)
         sys.exit(3)
@@ -28,10 +34,10 @@ def main():
         print("Specified theme directory does not exists: " + args.themeDir)
         sys.exit(4)
     if args.sourceFile and not os.path.exists(args.sourceFile):
-        print("Specified source file does not exists: " + args.sourceFile)
+        print("Specified source cache file does not exists: " + args.sourceFile)
         sys.exit(5)
     if args.themeFile and not os.path.exists(args.themeFile):
-        print("Specified theme file does not exists: " + args.themeFile)
+        print("Specified theme chache file does not exists: " + args.themeFile)
         sys.exit(6)
 
     if args.sourceDir:
