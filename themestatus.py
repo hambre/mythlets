@@ -186,7 +186,7 @@ def addWindow(windowDict, themeFile, themeWindow):
 
 # parses a source file, returns a dict{theme file: {theme windows}, ...}
 def parseSourceFile(sourceDir, fileName):
-    if not fileName.endswith(".cpp"):
+    if not fileName.endswith(".cpp") and not fileName.endswith(".xml"):
         return {}
     if fileName.endswith("xmlparsebase.cpp"):
         return {}
@@ -253,6 +253,13 @@ def parseSourceFile(sourceDir, fileName):
                         for w in args[1]:
                             addWindow(results, "osd.xml", w)
                         continue
+            elif "screen name=" in l:
+                fields = l.split('"')
+                if len(fields) > 2 and os.path.basename(fileName) == "weather-screens.xml":
+                    themeFile = "weather-ui.xml"
+                    themeWindow = fields[1]
+                    addWindow(results, themeFile, themeWindow)
+                    continue
             else:
                 continue
             # parsing failed somehow, output filename and line number
