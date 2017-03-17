@@ -2,6 +2,7 @@
 
 import argparse, sys, os, codecs, json
 import parsecpp
+import xml.etree.ElementTree as ET
 
 print ('Checking theme progress / completeness...')
 
@@ -166,12 +167,10 @@ def parseThemeFile(themeDir, fileName):
     themeFile = os.path.basename(fileName)
     #print(themeFile)
     themeWindows = set()
-    with openTextFile(fileName) as f:
-        for l in f:
-            if "window name" in l:
-                fields = l.split('"')
-                if len(fields) > 2:
-                    themeWindows.add(fields[1])
+    tree = ET.parse(fileName)
+    for node in tree.getroot().iter('window'):
+        themeWindows.add(node.get('name'))
+
     if themeWindows:
         return {themeFile : themeWindows}
     else:
@@ -186,12 +185,18 @@ def addWindow(windowDict, themeFile, themeWindow):
 
 # parses a source file, returns a dict{theme file: {theme windows}, ...}
 def parseSourceFile(sourceDir, fileName):
-    if not fileName.endswith(".cpp") and not fileName.endswith(".xml"):
-        return {}
-    if fileName.endswith("xmlparsebase.cpp"):
-        return {}
-    #print(os.path.basename(fileName))
     results = {}
+    if not fileName.endswith(".cpp") and not fileName.endswith(".xml"):
+        return results
+
+    # special case for mythweather screen definition file
+    if os.path.basename(fileName) == "weather-screens.xml":
+        tree = ET.parse(fileName)
+        for node in tree.getroot().iter('screen'):
+            addWindow(results, "weather-ui.xml", node.get('name'))
+        return results
+
+    #print(os.path.basename(fileName))
     with openTextFile(fileName) as f:
         lineNumber = 0;
         for l in f:
@@ -253,13 +258,6 @@ def parseSourceFile(sourceDir, fileName):
                         for w in args[1]:
                             addWindow(results, "osd.xml", w)
                         continue
-            elif "screen name=" in l:
-                fields = l.split('"')
-                if len(fields) > 2 and os.path.basename(fileName) == "weather-screens.xml":
-                    themeFile = "weather-ui.xml"
-                    themeWindow = fields[1]
-                    addWindow(results, themeFile, themeWindow)
-                    continue
             else:
                 continue
             # parsing failed somehow, output filename and line number
