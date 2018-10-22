@@ -1,15 +1,23 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2
 
 import argparse, sys, os
+from MythTV import Job
+from MythTV.database import DBCache
 
 sys.path.append("/usr/bin")
 
-def FindDirByTitle(dirName, title):
-    for root, dirs, files in os.walk(dirName):
-        for name in files:
-            index = name.find(title)
-            if index == 0:
-                return root
+def FindStorageDirByTitle(title):
+    db = DBCache(None)
+    dirName = None
+    for sg in db.getStorageGroup(groupname='Videos'):
+        # search given group
+        if sg.local and os.path.isdir(sg.dirname):
+            dirName = sg.dirname
+            for root, dirs, files in os.walk(dirName):
+                for name in files:
+                    index = name.find(title)
+                    if index == 0:
+                        return dirName 
     # return initial directory
     return dirName 
 
@@ -38,8 +46,14 @@ def main():
     parser.add_argument('-s', '--subtitle', dest='recSubtitle', help='recording subtitle')
     parser.add_argument('-sn', '--season', dest='recSeason', default=0, type=int, help='recording season number')
     parser.add_argument('-en', '--episode', dest='recEpisode', default=0, type=int, help='recording episode number')
+    parser.add_argument('-j', '--jobid', dest='jobId', help='mythtv job id')
     opts = parser.parse_args()
     
+    mythJob = None
+    if opts.jobId:
+        mythJob = Job(opts.jobId)
+        mythJob.update(status=Job.STARTING)
+
     recPath = None
     if opts.recPath:
         recPath = opts.recPath
@@ -66,15 +80,20 @@ def main():
     vidFile = "_".join(' '.join(parts).split()) + ".m4v"
 
     # build output file path
-    # TODO pull video storage dir(s) from backend
-    vidDir = FindDirByTitle("/srv/mythtv/media1/movies/", "_".join(opts.recTitle.split()))
+    vidDir = FindStorageDirByTitle("_".join(opts.recTitle.split()))
+    if not vidDir:
+        sys.stderr.write('Could not find video storage directory\n')
+        sys.exit(2)
     vidPath = os.path.join(vidDir, vidFile)
     if not os.path.isfile(recPath):
         sys.stderr.write('Input recording file does not exist\n')
-        sys.exit(2)
+        sys.exit(3)
     if os.path.isfile(vidPath):
         sys.stderr.write('Output video file already exists\n')
-        sys.exit(3)
+        sys.exit(4)
+
+    if mythJob:
+        mythJob.setStatus(Job.RUNNING)
 
     # start transcoding 
     # TODO use subprocess for async processing and progress reporting
@@ -93,11 +112,17 @@ def main():
         
     ShowNotification('Finished transcoding \"{}\"'.format(opts.recTitle), 'normal')
     
+    if mythJob:
+        mythJob.setComment('Finished transcoding')
+
     # scan videos
     args = []
     args.append('mythutil')
     args.append('--scanvideos')
     res = os.spawnvp(os.P_WAIT, 'mythutil', args)
+
+    if mythJob:
+        mythJob.setStatus(Job.FINISHED)
 
     # .. the end
     sys.exit(0)
