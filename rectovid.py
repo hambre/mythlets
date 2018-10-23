@@ -6,22 +6,38 @@ from MythTV.database import DBCache
 
 sys.path.append("/usr/bin")
 
-def FindStorageDirByTitle(title):
+def decodeName(name):
+    if type(name) == str: # leave unicode ones alone
+        try:
+            name = name.decode('utf8')
+        except:
+            name = name.decode('windows-1252')
+    return name
+
+def findStorageDirByTitle(title):
     db = DBCache(None)
     dirName = None
+    title = decodeName(title)
     for sg in db.getStorageGroup(groupname='Videos'):
         # search given group
         if sg.local and os.path.isdir(sg.dirname):
             dirName = sg.dirname
             for root, dirs, files in os.walk(dirName):
                 for name in files:
-                    index = name.find(title)
+                    index = decodeName(name).find(title)
                     if index == 0:
-                        return dirName 
+                        return root 
     # return initial directory
     return dirName 
 
-def ShowNotification(msgText, msgType):
+def formatFileSize(num):
+    for unit in ['B','KB','MB','GB','TB']:
+        if abs(num) < 1000.0:
+            return "%3.1f %s" % (num, unit)
+        num /= 1000.0
+    return "%.1f %s" % (num, 'PB')
+
+def showNotification(msgText, msgType):
     args= []
     args.append('mythutil')
     args.append('--notification')
@@ -52,7 +68,6 @@ def main():
     mythJob = None
     if opts.jobId:
         mythJob = Job(opts.jobId)
-        mythJob.update(status=Job.STARTING)
 
     recPath = None
     if opts.recPath:
@@ -77,10 +92,10 @@ def main():
         parts.append('-')
     if opts.recSubtitle and opts.recSubtitle != "":
         parts.append(opts.recSubtitle)
-    vidFile = "_".join(' '.join(parts).split()) + ".m4v"
+    vidFile = decodeName("_".join(' '.join(parts).split()) + ".m4v")
 
     # build output file path
-    vidDir = FindStorageDirByTitle("_".join(opts.recTitle.split()))
+    vidDir = findStorageDirByTitle("_".join(opts.recTitle.split()))
     if not vidDir:
         sys.stderr.write('Could not find video storage directory\n')
         sys.exit(2)
@@ -93,6 +108,7 @@ def main():
         sys.exit(4)
 
     if mythJob:
+        mythJob.update(status=Job.STARTING)
         mythJob.setStatus(Job.RUNNING)
 
     # start transcoding 
@@ -107,13 +123,19 @@ def main():
     args.append(vidPath)
     res = os.spawnvp(os.P_WAIT, 'HandBrakeCLI', args)
     if res != 0:
-        ShowNotification('Failed transcoding \"{}\" (error {})'.format(opts.recTitle, res), 'error')
+        if os.isfile(vidPath):
+            os.remove(vidPath)
+        showNotification('Failed transcoding \"{}\" (error {})'.format(opts.recTitle, res), 'error')
         sys.exit(res)
         
-    ShowNotification('Finished transcoding \"{}\"'.format(opts.recTitle), 'normal')
+    recSize = os.stat(recPath).st_size
+    vidSize = os.stat(vidPath).st_size
+    sizeStatus = formatFileSize(recSize) + ' => ' + formatFileSize(vidSize)
+    
+    showNotification('Finished transcoding \"{}\"'.format(opts.recTitle) + '\n' + sizeStatus, 'normal')
     
     if mythJob:
-        mythJob.setComment('Finished transcoding')
+        mythJob.setComment('Finished transcoding\n' + sizeStatus)
 
     # scan videos
     args = []
@@ -129,3 +151,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
