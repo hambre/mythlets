@@ -53,6 +53,11 @@ def showNotification(msgText, msgType):
     if msgType == 'error':
         sys.stderr.write(msgText + '\n')
 
+def logError(mythJob, errorMsg):
+    if mythJob:
+        mythJob.setComment(errorMsg)
+    sys.stderr.write(errorMsg + '\n')
+
 def main():
     parser = argparse.ArgumentParser(description='Transcoding recording and move to videos')
     parser.add_argument('-f', '--file', dest='recFile', help='recording file name')
@@ -75,11 +80,11 @@ def main():
     elif opts.recDir and opts.recFile:
         recPath = os.path.join(opts.recDir, opts.recFile)
     if not recPath:
-        sys.stderr.write('Please specify a recording path or recording directoy and recording file\n')
+        logError(mythJob, 'Recording path or recording directoy + recording file not specified')
         sys.exit(1)
 
     if opts.recTitle == None and opts.recSubtitle == None:
-        sys.stderr.write('Please specify a title and/or subtitle\n')
+        logError(mythJob, 'Title and/or subtitle not specified')
         sys.exit(1)
     
     # build output file name
@@ -97,14 +102,14 @@ def main():
     # build output file path
     vidDir = findStorageDirByTitle("_".join(opts.recTitle.split()))
     if not vidDir:
-        sys.stderr.write('Could not find video storage directory\n')
+        logError(mythJob, 'Could not find video storage directory')
         sys.exit(2)
     vidPath = os.path.join(vidDir, vidFile)
     if not os.path.isfile(recPath):
-        sys.stderr.write('Input recording file does not exist\n')
+        logError(mythJob, 'Input recording file does not exist')
         sys.exit(3)
     if os.path.isfile(vidPath):
-        sys.stderr.write('Output video file already exists\n')
+        logError(mythJob, 'Output video file already exists')
         sys.exit(4)
 
     if mythJob:
@@ -125,6 +130,7 @@ def main():
     if res != 0:
         if os.isfile(vidPath):
             os.remove(vidPath)
+        logError(mythJob, 'Failed transcoding (error {})'.format(res))
         showNotification('Failed transcoding \"{}\" (error {})'.format(opts.recTitle, res), 'error')
         sys.exit(res)
         
