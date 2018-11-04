@@ -1,6 +1,6 @@
 #!/usr/bin/env python2
 
-import argparse, sys, os
+import argparse, sys, os, subprocess
 from MythTV import Job
 from MythTV.database import DBCache
 
@@ -14,14 +14,24 @@ def decodeName(name):
             name = name.decode('windows-1252')
     return name
 
+def getFreeSpace(filename):
+    stats = os.statvfs(filename)
+    return stats.f_bfree * stats.f_frsize
+
 def findStorageDirByTitle(title):
     db = DBCache(None)
     dirName = None
     title = decodeName(title)
+    maxFreeSpace = 0
     for sg in db.getStorageGroup(groupname='Videos'):
         # search given group
         if sg.local and os.path.isdir(sg.dirname):
-            dirName = sg.dirname
+            # get avaliable space of storage group partition
+            # and use storage group with max. available space
+            freeSpace = getFreeSpace(sg.dirname)
+            if freeSpace > maxFreeSpace:
+                dirName = sg.dirname
+                maxFreeSpace = freeSpace
             for root, dirs, files in os.walk(dirName):
                 for name in files:
                     index = decodeName(name).find(title)
@@ -126,14 +136,47 @@ def main():
     args.append(recPath)
     args.append('-o')
     args.append(vidPath)
-    res = os.spawnvp(os.P_WAIT, 'HandBrakeCLI', args)
+    res = 0
+    if mythJob:
+        cp = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        line = ''
+        lastProgress = 0 
+        while True:
+            nl = cp.stdout.read(1)
+            if nl == '' and cp.poll() is not None:
+                break  # Aborted, no characters available, process died.
+            if nl == '\n':
+                line = ''
+            elif nl == '\r':
+                lastToken = ''
+                progress = '0' 
+                eta = None
+                for token in line.decode('utf-8').split():
+                    if token == '%':
+                        progress = lastToken
+                    if lastToken == 'ETA':
+                        eta = token.replace(')', '')
+                    if eta and progress:
+                        break
+                    lastToken = token
+                if eta and int(float(progress)) > lastProgress:
+                    #print('Progress: {} Remaining time: {}'.format(progress, eta))
+                    mythJob.setComment('Progress: {} %\nRemaining time: {}'.format(progress, eta))
+                    lastProgress = int(float(progress))
+                line = ''
+            else:
+                line += nl
+        res = cp.wait()
+    else:
+        res = os.spawnvp(os.P_WAIT, 'HandBrakeCLI', args)
+
     if res != 0:
         if os.isfile(vidPath):
             os.remove(vidPath)
         logError(mythJob, 'Failed transcoding (error {})'.format(res))
         showNotification('Failed transcoding \"{}\" (error {})'.format(opts.recTitle, res), 'error')
         sys.exit(res)
-        
+
     recSize = os.stat(recPath).st_size
     vidSize = os.stat(vidPath).st_size
     sizeStatus = formatFileSize(recSize) + ' => ' + formatFileSize(vidSize)
@@ -141,7 +184,7 @@ def main():
     showNotification('Finished transcoding \"{}\"'.format(opts.recTitle) + '\n' + sizeStatus, 'normal')
     
     if mythJob:
-        mythJob.setComment('Finished transcoding\n' + sizeStatus)
+        mythJob.setComment('Triggering video rescan')
 
     # scan videos
     args = []
@@ -150,6 +193,7 @@ def main():
     res = os.spawnvp(os.P_WAIT, 'mythutil', args)
 
     if mythJob:
+        mythJob.setComment('Finished transcoding\n' + sizeStatus)
         mythJob.setStatus(Job.FINISHED)
 
     # .. the end
