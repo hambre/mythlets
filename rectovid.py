@@ -99,6 +99,7 @@ def main():
     parser.add_argument('-sn', '--season', dest='recSeason', default=0, type=int, help='recording season number')
     parser.add_argument('-en', '--episode', dest='recEpisode', default=0, type=int, help='recording episode number')
     parser.add_argument('-j', '--jobid', dest='jobId', help='mythtv job id')
+    parser.add_argument('--preset', dest='preset', default='HQ 1080p30 Surround', help='Handbrake transcoding preset')
     opts = parser.parse_args()
     
     mythJob = None
@@ -151,7 +152,7 @@ def main():
     args = []
     args.append('HandBrakeCLI')
     args.append('--preset')
-    args.append('HQ 1080p30 Surround')
+    args.append(opts.preset)
     args.append('-i')
     args.append(recPath)
     args.append('-o')
