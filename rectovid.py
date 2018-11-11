@@ -18,11 +18,25 @@ def getFreeSpace(filename):
     stats = os.statvfs(filename)
     return stats.f_bfree * stats.f_frsize
 
+# find storage directory by recording title
+def matchTitle(title, name):
+    t = title.lower()
+    n = name.lower()
+    for c in (' ', '_', '-'):
+        n = n.replace(c, '')
+        t = t.replace(c, '')
+    return n.startswith(t)
+
+# Uses the following criteria by descending priority
+# 1. Storage dir with maximum free space
+# 2. Directory matching recording title (useful for series)
+# 3. Directory containing files matching the title
 def findStorageDirByTitle(title):
     db = DBCache(None)
-    dirName = None
+    matchDirName = None
     title = decodeName(title)
     maxFreeSpace = 0
+    maxFreeDirName = None
     for sg in db.getStorageGroup(groupname='Videos'):
         # search given group
         if sg.local and os.path.isdir(sg.dirname):
@@ -30,15 +44,22 @@ def findStorageDirByTitle(title):
             # and use storage group with max. available space
             freeSpace = getFreeSpace(sg.dirname)
             if freeSpace > maxFreeSpace:
-                dirName = sg.dirname
+                maxFreeDirName = sg.dirname
                 maxFreeSpace = freeSpace
-            for root, dirs, files in os.walk(dirName):
-                for name in files:
-                    index = decodeName(name).find(title)
-                    if index == 0:
-                        return root 
-    # return initial directory
-    return dirName 
+            for root, dirs, files in os.walk(sg.dirname):
+                # first check subdir for match
+                for d in dirs:
+                    if matchTitle(title, decodeName(d)):
+                        matchDirName = os.path.join(root, d)
+                # check file names for match
+                for f in files:
+                    if matchTitle(title, decodeName(f)):
+                        return root
+    # return directory matching title if found
+    if matchDirName:
+        return matchDirName
+    # return storage directory with max free space
+    return maxFreeDirName 
 
 def formatFileSize(num):
     for unit in ['B','KB','MB','GB','TB']:
@@ -127,7 +148,6 @@ def main():
         mythJob.setStatus(Job.RUNNING)
 
     # start transcoding 
-    # TODO use subprocess for async processing and progress reporting
     args = []
     args.append('HandBrakeCLI')
     args.append('--preset')
