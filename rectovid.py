@@ -1,22 +1,28 @@
 #!/usr/bin/env python2
 
-import argparse, sys, os, subprocess
+import argparse
+import sys
+import os
+import subprocess
 from MythTV import Job
 from MythTV.database import DBCache
 
 sys.path.append("/usr/bin")
 
+
 def decodeName(name):
-    if type(name) == str: # leave unicode ones alone
+    if type(name) == str:  # leave unicode ones alone
         try:
             name = name.decode('utf8')
-        except:
+        except UnicodeDecodeError:
             name = name.decode('windows-1252')
     return name
+
 
 def getFreeSpace(filename):
     stats = os.statvfs(filename)
     return stats.f_bfree * stats.f_frsize
+
 
 # find storage directory by recording title
 def matchTitle(title, name):
@@ -26,6 +32,7 @@ def matchTitle(title, name):
         n = n.replace(c, '')
         t = t.replace(c, '')
     return n.startswith(t)
+
 
 # Uses the following criteria by descending priority
 # 1. Storage dir with maximum free space
@@ -59,21 +66,23 @@ def findStorageDirByTitle(title):
     if matchDirName:
         return matchDirName
     # return storage directory with max free space
-    return maxFreeDirName 
+    return maxFreeDirName
+
 
 def formatFileSize(num):
-    for unit in ['B','KB','MB','GB','TB']:
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
         if abs(num) < 1000.0:
             return "%3.1f %s" % (num, unit)
         num /= 1000.0
     return "%.1f %s" % (num, 'PB')
 
+
 def showNotification(msgText, msgType):
-    args= []
+    args = []
     args.append('mythutil')
     args.append('--notification')
     args.append('--origin')
-    args.append('\"' + __file__ +'\"')
+    args.append('\"' + __file__ + '\"')
     args.append('--timeout')
     args.append('60')
     args.append('--message_text')
@@ -84,10 +93,12 @@ def showNotification(msgText, msgType):
     if msgType == 'error':
         sys.stderr.write(msgText + '\n')
 
+
 def logError(mythJob, errorMsg):
     if mythJob:
         mythJob.setComment(errorMsg)
     sys.stderr.write(errorMsg + '\n')
+
 
 def main():
     parser = argparse.ArgumentParser(description='Transcoding recording and move to videos')
@@ -101,7 +112,7 @@ def main():
     parser.add_argument('-j', '--jobid', dest='jobId', help='mythtv job id')
     parser.add_argument('--preset', dest='preset', default='HQ 1080p30 Surround', help='Handbrake transcoding preset')
     opts = parser.parse_args()
-    
+
     mythJob = None
     if opts.jobId:
         mythJob = Job(opts.jobId)
@@ -115,11 +126,11 @@ def main():
         logError(mythJob, 'Recording path or recording directoy + recording file not specified')
         sys.exit(1)
 
-    if opts.recTitle == None and opts.recSubtitle == None:
+    if opts.recTitle is None and opts.recSubtitle is None:
         logError(mythJob, 'Title and/or subtitle not specified')
         sys.exit(1)
-    
-    # build output file name
+
+    # build output file name: "The_title(_-_|_SxxEyy_][The_Subtitle].m4v"
     parts = []
     if opts.recTitle and opts.recTitle != "":
         parts.append(opts.recTitle)
@@ -148,7 +159,7 @@ def main():
         mythJob.update(status=Job.STARTING)
         mythJob.setStatus(Job.RUNNING)
 
-    # start transcoding 
+    # start transcoding
     args = []
     args.append('HandBrakeCLI')
     args.append('--preset')
@@ -161,7 +172,7 @@ def main():
     if mythJob:
         cp = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         line = ''
-        lastProgress = 0 
+        lastProgress = 0
         while True:
             nl = cp.stdout.read(1)
             if nl == '' and cp.poll() is not None:
@@ -170,7 +181,7 @@ def main():
                 line = ''
             elif nl == '\r':
                 lastToken = ''
-                progress = '0' 
+                progress = '0'
                 eta = None
                 for token in line.decode('utf-8').split():
                     if token == '%':
@@ -181,7 +192,7 @@ def main():
                         break
                     lastToken = token
                 if eta and int(float(progress)) > lastProgress:
-                    #print('Progress: {} Remaining time: {}'.format(progress, eta))
+                    # print('Progress: {} Remaining time: {}'.format(progress, eta))
                     mythJob.setComment('Progress: {} %\nRemaining time: {}'.format(progress, eta))
                     lastProgress = int(float(progress))
                 line = ''
@@ -201,9 +212,9 @@ def main():
     recSize = os.stat(recPath).st_size
     vidSize = os.stat(vidPath).st_size
     sizeStatus = formatFileSize(recSize) + ' => ' + formatFileSize(vidSize)
-    
+
     showNotification('Finished transcoding \"{}\"'.format(opts.recTitle) + '\n' + sizeStatus, 'normal')
-    
+
     if mythJob:
         mythJob.setComment('Triggering video rescan')
 
@@ -220,6 +231,6 @@ def main():
     # .. the end
     sys.exit(0)
 
+
 if __name__ == "__main__":
     main()
-
