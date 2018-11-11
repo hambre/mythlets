@@ -53,7 +53,7 @@ def findStorageDirByTitle(title):
             if freeSpace > maxFreeSpace:
                 maxFreeDirName = sg.dirname
                 maxFreeSpace = freeSpace
-            for root, dirs, files in os.walk(sg.dirname):
+            for root, dirs, files in os.walk(sg.dirname, followlinks=True):
                 # first check subdir for match
                 for d in dirs:
                     if matchTitle(title, decodeName(d)):
