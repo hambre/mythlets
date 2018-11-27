@@ -4,11 +4,14 @@ import argparse
 import sys
 import os
 import subprocess
+from threading import Timer
 from MythTV import Job
 from MythTV.database import DBCache
 
 sys.path.append("/usr/bin")
 
+# the global job object
+mythJob = None
 
 def decodeName(name):
     if type(name) == str:  # leave unicode ones alone
@@ -94,10 +97,70 @@ def showNotification(msgText, msgType):
         sys.stderr.write(msgText + '\n')
 
 
-def logError(mythJob, errorMsg):
+def logError(errorMsg):
+    global mythJob
     if mythJob:
         mythJob.setComment(errorMsg)
     sys.stderr.write(errorMsg + '\n')
+
+
+def abortTranscode(process):
+    logError('Aborting transcode due to timeout')
+    process.kill()
+
+
+def transcode(srcFile, dstFile, preset):
+    global mythJob
+    # start the transcoding process
+    args = []
+    args.append('HandBrakeCLI')
+    args.append('--preset')
+    args.append(preset)
+    args.append('-i')
+    args.append(srcFile)
+    args.append('-o')
+    args.append(dstFile)
+    cp = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    # start timer to abort transcode process if it hangs
+    abortTimer = Timer(180.0, abortTranscode, [cp])
+    abortTimer.start()
+
+    line = ''
+    lastProgress = 0
+    while True:
+        nl = cp.stdout.read(1)
+        if nl == '' and cp.poll() is not None:
+            break  # Aborted, no characters available, process died.
+        if nl == '\n':
+            line = ''
+        elif nl == '\r':
+            lastToken = ''
+            progress = '0'
+            eta = None
+            for token in line.decode('utf-8').split():
+                if token == '%':
+                    progress = lastToken
+                if lastToken == 'ETA':
+                    eta = token.replace(')', '')
+                if eta and progress:
+                    break
+                lastToken = token
+            if eta and int(float(progress)) > lastProgress:
+                # print('Progress: {} Remaining time: {}'.format(progress, eta))
+                # new progress, restart abort timer
+                abortTimer.cancel()
+                abortTimer = Timer(180.0, abortTranscode, [cp])
+                abortTimer.start()
+                if mythJob:
+                    mythJob.setComment('Progress: {} %\nRemaining time: {}'.format(progress, eta))
+                lastProgress = int(float(progress))
+            line = ''
+        else:
+            line += nl
+    res = cp.wait()
+    abortTimer.cancel()
+    return res
 
 
 def main():
@@ -113,7 +176,7 @@ def main():
     parser.add_argument('--preset', dest='preset', default='HQ 1080p30 Surround', help='Handbrake transcoding preset')
     opts = parser.parse_args()
 
-    mythJob = None
+    global mythJob
     if opts.jobId:
         mythJob = Job(opts.jobId)
 
@@ -123,11 +186,11 @@ def main():
     elif opts.recDir and opts.recFile:
         recPath = os.path.join(opts.recDir, opts.recFile)
     if not recPath:
-        logError(mythJob, 'Recording path or recording directoy + recording file not specified')
+        logError('Recording path or recording directoy + recording file not specified')
         sys.exit(1)
 
     if opts.recTitle is None and opts.recSubtitle is None:
-        logError(mythJob, 'Title and/or subtitle not specified')
+        logError('Title and/or subtitle not specified')
         sys.exit(1)
 
     # build output file name: "The_title(_-_|_SxxEyy_][The_Subtitle].m4v"
@@ -145,14 +208,14 @@ def main():
     # build output file path
     vidDir = findStorageDirByTitle("_".join(opts.recTitle.split()))
     if not vidDir:
-        logError(mythJob, 'Could not find video storage directory')
+        logError('Could not find video storage directory')
         sys.exit(2)
     vidPath = os.path.join(vidDir, vidFile)
     if not os.path.isfile(recPath):
-        logError(mythJob, 'Input recording file does not exist')
+        logError('Input recording file does not exist')
         sys.exit(3)
     if os.path.isfile(vidPath):
-        logError(mythJob, 'Output video file already exists')
+        logError('Output video file already exists')
         sys.exit(4)
 
     if mythJob:
@@ -160,53 +223,14 @@ def main():
         mythJob.setStatus(Job.RUNNING)
 
     # start transcoding
-    args = []
-    args.append('HandBrakeCLI')
-    args.append('--preset')
-    args.append(opts.preset)
-    args.append('-i')
-    args.append(recPath)
-    args.append('-o')
-    args.append(vidPath)
-    res = 0
-    if mythJob:
-        cp = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        line = ''
-        lastProgress = 0
-        while True:
-            nl = cp.stdout.read(1)
-            if nl == '' and cp.poll() is not None:
-                break  # Aborted, no characters available, process died.
-            if nl == '\n':
-                line = ''
-            elif nl == '\r':
-                lastToken = ''
-                progress = '0'
-                eta = None
-                for token in line.decode('utf-8').split():
-                    if token == '%':
-                        progress = lastToken
-                    if lastToken == 'ETA':
-                        eta = token.replace(')', '')
-                    if eta and progress:
-                        break
-                    lastToken = token
-                if eta and int(float(progress)) > lastProgress:
-                    # print('Progress: {} Remaining time: {}'.format(progress, eta))
-                    mythJob.setComment('Progress: {} %\nRemaining time: {}'.format(progress, eta))
-                    lastProgress = int(float(progress))
-                line = ''
-            else:
-                line += nl
-        res = cp.wait()
-    else:
-        res = os.spawnvp(os.P_WAIT, 'HandBrakeCLI', args)
-
+    res = transcode(recPath, vidPath, opts.preset)
     if res != 0:
-        if os.isfile(vidPath):
+        if os.path.isfile(vidPath):
             os.remove(vidPath)
-        logError(mythJob, 'Failed transcoding (error {})'.format(res))
+        logError('Failed transcoding (error {})'.format(res))
         showNotification('Failed transcoding \"{}\" (error {})'.format(opts.recTitle, res), 'error')
+        if mythJob:
+            mythJob.setStatus(Job.ERRORED)
         sys.exit(res)
 
     recSize = os.stat(recPath).st_size
