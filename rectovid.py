@@ -109,7 +109,7 @@ def abortTranscode(process):
     process.kill()
 
 
-def transcode(srcFile, dstFile, preset):
+def transcode(srcFile, dstFile, preset, timeout):
     global mythJob
     # start the transcoding process
     args = []
@@ -123,7 +123,7 @@ def transcode(srcFile, dstFile, preset):
     cp = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
     # start timer to abort transcode process if it hangs
-    abortTimer = Timer(180.0, abortTranscode, [cp])
+    abortTimer = Timer(timeout, abortTranscode, [cp])
     abortTimer.start()
 
     line = ''
@@ -150,7 +150,7 @@ def transcode(srcFile, dstFile, preset):
                 # print('Progress: {} Remaining time: {}'.format(progress, eta))
                 # new progress, restart abort timer
                 abortTimer.cancel()
-                abortTimer = Timer(180.0, abortTranscode, [cp])
+                abortTimer = Timer(timeout, abortTranscode, [cp])
                 abortTimer.start()
                 if mythJob:
                     mythJob.setComment('Progress: {} %\nRemaining time: {}'.format(progress, eta))
@@ -174,6 +174,7 @@ def main():
     parser.add_argument('-en', '--episode', dest='recEpisode', default=0, type=int, help='recording episode number')
     parser.add_argument('-j', '--jobid', dest='jobId', help='mythtv job id')
     parser.add_argument('--preset', dest='preset', default='HQ 1080p30 Surround', help='Handbrake transcoding preset')
+    parser.add_argument('--timeout', dest='timeout', default=300, type=int, help='timeout in seconds to abort transcoding process')
     opts = parser.parse_args()
 
     global mythJob
@@ -223,7 +224,7 @@ def main():
         mythJob.setStatus(Job.RUNNING)
 
     # start transcoding
-    res = transcode(recPath, vidPath, opts.preset)
+    res = transcode(recPath, vidPath, opts.preset, opts.timeout)
     if res != 0:
         if os.path.isfile(vidPath):
             os.remove(vidPath)
