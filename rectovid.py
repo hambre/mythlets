@@ -13,9 +13,11 @@ sys.path.append("/usr/bin")
 
 class Status:
     mythJob = None
+    mythJobId = 0
 
     def __init__(self, jobId=0):
         if jobId and not Status.mythJob:
+            Status.mythJobId = jobId
             Status.mythJob = Job(jobId)
             Status.mythJob.update(status=Job.STARTING)
             self.setComment('Starting job...')
@@ -32,6 +34,12 @@ class Status:
     def setStatus(self, newStatus):
         if Status.mythJob:
             Status.mythJob.setStatus(newStatus)
+
+    def getCmd(self):
+        if Status.mythJobId == 0:
+            return Job.UNKNOWN
+        # create new job object to pull current state from database
+        return Job(Status.mythJobId).cmds
 
     def showNotification(self, msgText, msgType):
         args = []
@@ -193,6 +201,10 @@ class Transcoder:
                     self.__startTimer(timeout, cp)
                     self.status.setComment('Progress: {} %\nRemaining time: {}'.format(progress, eta))
                     lastProgress = int(float(progress))
+                    # check if job was stopped externally
+                    if self.status.getCmd() == Job.STOP:
+                        cp.kill()
+                        break
                 line = ''
             else:
                 line += nl
@@ -277,7 +289,12 @@ def main():
 
     # start transcoding
     res = Transcoder().transcode(recPath, vidPath, opts.preset, opts.timeout)
-    if res != 0:
+    if status.getCmd() == Job.STOP:
+        status.setStatus(Job.CANCELLED)
+        status.setComment('Stopped transcoding')
+        status.showNotification('Stopped transcoding \"{}\"'.format(opts.recTitle), 'warning')
+        sys.exit(4)
+    elif res != 0:
         status.logError('Failed transcoding (error {})'.format(res))
         status.showNotification('Failed transcoding \"{}\" (error {})'.format(opts.recTitle, res), 'error')
         sys.exit(res)
