@@ -5,8 +5,9 @@ import sys
 import os
 import subprocess
 from threading import Timer
-from MythTV import Job
+from MythTV import Job, Recorded
 from MythTV.database import DBCache
+from MythTV.utility import datetime
 
 sys.path.append("/usr/bin")
 
@@ -162,6 +163,13 @@ class Transcoder:
         self.timer = None
 
     def transcode(self, srcFile, dstFile, preset, timeout):
+        # obtain cutlist
+        fileBaseName,ext = os.path.splitext(os.path.basename(srcFile))
+        (chanid, startTime) = fileBaseName.split('_', 2)
+        dt = datetime.fromnaiveutc(datetime.duck(startTime))
+        rec = Recorded((chanid, dt), DBCache())
+        cuts = rec.markup.getuncutlist()
+
         # start the transcoding process
         args = []
         args.append('HandBrakeCLI')
@@ -171,6 +179,17 @@ class Transcoder:
         args.append(srcFile)
         args.append('-o')
         args.append(dstFile)
+        if len(cuts) == 1:
+            # pass start and end position of remaining part to handbrake
+            args.append('--start-at')
+            args.append('frame:{}'.format(cuts[0][0]))
+            # stop it relative to start position
+            args.append('--stop-at')
+            args.append('frame:{}'.format(cuts[0][1]-cuts[0][0]))
+        elif len(cuts) > 1:
+            # more than one remaining part is not supported yet
+            return 1
+
         cp = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         # start timer to abort transcode process if it hangs
