@@ -5,7 +5,7 @@ import sys
 import os
 import subprocess
 from threading import Timer
-from MythTV import Job, Recorded
+from MythTV import Job, Recorded, MythError
 from MythTV.database import DBCache
 from MythTV.utility import datetime
 
@@ -41,6 +41,16 @@ class Status:
             return Job.UNKNOWN
         # create new job object to pull current state from database
         return Job(Status.mythJobId).cmds
+
+    def getChanId(self):
+        if Status.mythJob:
+            return Status.mythJob.chanid
+        return None
+
+    def getStartTime(self):
+        if Status.mythJob:
+            return Status.mythJob.starttime
+        return None
 
     def showNotification(self, msgText, msgType):
         args = []
@@ -164,11 +174,20 @@ class Transcoder:
 
     def transcode(self, srcFile, dstFile, preset, timeout):
         # obtain cutlist
-        fileBaseName,ext = os.path.splitext(os.path.basename(srcFile))
-        (chanid, startTime) = fileBaseName.split('_', 2)
-        dt = datetime.fromnaiveutc(datetime.duck(startTime))
-        rec = Recorded((chanid, dt), DBCache())
-        cuts = rec.markup.getuncutlist()
+        dt = self.status.getStartTime()
+        chanid = self.status.getChanId()
+        if not dt or not chanid:
+            # extract chanid and starttime from recording file name
+            fileBaseName,ext = os.path.splitext(os.path.basename(srcFile))
+            (chanid, startTime) = fileBaseName.split('_', 2)
+            dt = datetime.fromnaiveutc(datetime.duck(startTime))
+
+        try:
+            rec = Recorded((chanid, dt), DBCache())
+            cuts = rec.markup.getuncutlist()
+        except MythError as err:
+            sys.stderr.write('Could not read cutlist ({})\n'.format(err.message))
+            return 1
 
         # start the transcoding process
         args = []
@@ -188,6 +207,7 @@ class Transcoder:
             args.append('frame:{}'.format(cuts[0][1]-cuts[0][0]))
         elif len(cuts) > 1:
             # more than one remaining part is not supported yet
+            sys.stderr.write('Unsupported number of cuts ({})\n'.format(len(cuts)))
             return 1
 
         cp = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
