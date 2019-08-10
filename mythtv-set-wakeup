@@ -1,0 +1,40 @@
+#!/bin/bash
+
+# script for setting the acpi wakeup time scheduled by mythbackend
+# the time comes as first parameter in format "yyyy-mm-dd HH:MM"
+
+DATE=`date +"%Y-%m-%d %H:%M:%S"`
+
+# first adjust the rtc clock to the current time
+echo "adjusting rtc clock"
+hwclock --adjust --utc
+
+if [ -e /proc/acpi/alarm ]; then
+
+	echo "$DATE setting wakeup time to $1 $2";
+
+	date -u -d "$1 $2:00 `date +"%z"`" +"%Y-%m-%d %H:%M:%S" >/proc/acpi/alarm
+
+	WRITTEN_DATE=`cat /proc/acpi/alarm`
+
+	echo "reading back date from /proc/acpi/alarm: $WRITTEN_DATE";
+elif [ -e /sys/class/rtc/rtc0/wakealarm ]; then
+
+	# convert to seconds since epoch
+	SSE=`date -d "$1 $2" +%s`
+	echo "$DATE setting wakeup time to $1 $2";
+ 
+	# clear alarm time
+	echo 0 > /sys/class/rtc/rtc0/wakealarm
+
+	# write alarm time
+	echo $SSE > /sys/class/rtc/rtc0/wakealarm
+
+	WRITTEN_DATE=`cat /sys/class/rtc/rtc0/wakealarm`
+	ALARM=`date -d @$WRITTEN_DATE +%F" "%T`
+
+	echo "reading back date from /sys/class/rtc/rtc0/wakealarm $ALARM";
+else
+	echo "no support for acpi alarm found"
+fi
+

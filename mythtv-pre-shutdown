@@ -1,0 +1,26 @@
+#!/bin/bash
+
+# scripts that checks if mythbackend can safely shutdown
+# the machine, i.e. no users are logged in or 
+# mythfilldatabase is running
+# these return values are interpreted by mythbackend:
+# 0 : Allows the box to reboot
+# 1 : Sends the backend around the idle timeout period again
+# 2 : Resets the "a client has connected" flag
+
+USERS=`users | wc -w`
+DATE=`date +"%Y-%m-%d %H:%M:%S"`
+
+if [ "$USERS" -le "1" ]; then
+    pidof "mythfilldatabase" > /dev/null;
+    if [ "$?" -eq "0" ]; then
+    	echo "$DATE checking if shutdown is allowed : no (mythfilldatabase is running)";
+	exit 1;
+    else
+    	echo "$DATE checking if shutdown is allowed : yes";
+    fi	
+    exit 0;
+else
+    echo "$DATE checking if shutdown is allowed : no ($USERS users still logged in)";
+    exit 1;
+fi

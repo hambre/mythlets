@@ -1,0 +1,20 @@
+#!/bin/bash
+
+# script to set lirc protocol for each found ir-remote
+
+syspath='/sys/class/rc';
+remotes=`ls $syspath`;
+
+for rc in $remotes; do
+    echo "checking remote $rc";
+    protocols=`cat "$syspath/$rc/protocols"`;
+    echo "available protocols: $protocols";
+
+    # first disable all protocols
+    echo "disabling all available protocols";
+    echo none > $syspath/$rc/protocols 2> /dev/null;
+
+    # now try to enable lirc protocol
+    echo "enabling lirc protocol";
+    echo lirc > $syspath/$rc/protocols 2> /dev/null;
+done
