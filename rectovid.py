@@ -1,4 +1,4 @@
-#!/usr/bin/env python2
+#!/usr/bin/env python3
 
 import argparse
 import sys
@@ -90,7 +90,7 @@ class VideoFilePath:
     def __buildDir(self):
         db = DBCache(None)
         matchDirName = None
-        title = self.__decodeName("_".join(self.title.split()))
+        title = "_".join(self.title.split())
         maxFreeSpace = 0
         maxFreeDirName = None
         for sg in db.getStorageGroup(groupname='Videos'):
@@ -105,11 +105,11 @@ class VideoFilePath:
                 for root, dirs, files in os.walk(sg.dirname, followlinks=True):
                     # first check subdir for match
                     for d in dirs:
-                        if self.__matchTitle(title, self.__decodeName(d)):
+                        if self.__matchTitle(title, d):
                             matchDirName = os.path.join(root, d)
                     # check file names for match
                     for f in files:
-                        if self.__matchTitle(title, self.__decodeName(f)):
+                        if self.__matchTitle(title, f):
                             return root
         # return directory matching title if found
         if matchDirName:
@@ -128,19 +128,11 @@ class VideoFilePath:
             parts.append('-')
         if self.subtitle and self.subtitle != "":
             parts.append(self.subtitle)
-        return self.__decodeName("_".join(' '.join(parts).split()) + ".m4v")
+        return "_".join(' '.join(parts).split()) + ".m4v"
 
     def __getFreeSpace(self, filename):
         stats = os.statvfs(filename)
         return stats.f_bfree * stats.f_frsize
-
-    def __decodeName(self, name):
-        if type(name) == str:  # leave unicode ones alone
-            try:
-                name = name.decode('utf8')
-            except UnicodeDecodeError:
-                name = name.decode('windows-1252')
-        return name
 
     # find storage directory by recording title
     def __matchTitle(self, title, name):
@@ -210,7 +202,7 @@ class Transcoder:
             sys.stderr.write('Unsupported number of cuts ({})\n'.format(len(cuts)))
             return 1
 
-        cp = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        cp = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         # start timer to abort transcode process if it hangs
         self.__startTimer(timeout, cp)
@@ -222,12 +214,10 @@ class Transcoder:
             if nl == '' and cp.poll() is not None:
                 break  # Aborted, no characters available, process died.
             if nl == '\n':
-                line = ''
-            elif nl == '\r':
                 lastToken = ''
                 progress = '0'
                 eta = None
-                for token in line.decode('utf-8').split():
+                for token in line.split():
                     if token == '%':
                         progress = lastToken
                     if lastToken == 'ETA':
