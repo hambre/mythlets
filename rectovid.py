@@ -4,9 +4,9 @@ import argparse
 import sys
 import os
 import subprocess
+import logging
 from threading import Timer
-from MythTV import Job, Recorded, MythError
-from MythTV.database import DBCache
+from MythTV import Job, Recorded, MythError, MythDB
 from MythTV.utility import datetime
 
 sys.path.append("/usr/bin")
@@ -24,9 +24,10 @@ class Status:
             self.setComment('Starting job...')
 
     def logError(self, errorMsg):
+        logging.error(errorMsg)
         self.setComment(errorMsg)
-        sys.stderr.write(errorMsg + '\n')
         self.setStatus(Job.ERRORED)
+        
 
     def setComment(self, msg):
         if Status.mythJob:
@@ -66,8 +67,11 @@ class Status:
         args.append(msgType)
         res = os.spawnvp(os.P_WAIT, 'mythutil', args)
         if msgType == 'error':
-            sys.stderr.write(msgText + '\n')
-
+            logging.error(msgText)
+        elif msgType == "warning":
+            logging.warning(msgText)
+        elif msgType == "normal":
+            logging.info(msgText)
 
 class VideoFilePath:
     def __init__(self):
@@ -88,7 +92,7 @@ class VideoFilePath:
     # 2. Directory matching recording title (useful for series)
     # 3. Directory containing files matching the title
     def __buildDir(self):
-        db = DBCache(None)
+        db = MythDB()
         matchDirName = None
         title = "_".join(self.title.split())
         maxFreeSpace = 0
@@ -99,6 +103,7 @@ class VideoFilePath:
                 # get avaliable space of storage group partition
                 # and use storage group with max. available space
                 freeSpace = self.__getFreeSpace(sg.dirname)
+                logging.debug('Storage group {} -> space {}'.format(sg.dirname, freeSpace))
                 if freeSpace > maxFreeSpace:
                     maxFreeDirName = sg.dirname
                     maxFreeSpace = freeSpace
@@ -113,8 +118,10 @@ class VideoFilePath:
                             return root
         # return directory matching title if found
         if matchDirName:
+            logging.debug('Using storage dir matching title')
             return matchDirName
         # return storage directory with max free space
+        logging.debug('Using storage dir with max. space')
         return maxFreeDirName
 
     def __buildName(self):
@@ -169,16 +176,22 @@ class Transcoder:
         dt = self.status.getStartTime()
         chanid = self.status.getChanId()
         if not dt or not chanid:
+            logging.debug('Determine chanid and starttime from filename')
             # extract chanid and starttime from recording file name
             fileBaseName,ext = os.path.splitext(os.path.basename(srcFile))
             (chanid, startTime) = fileBaseName.split('_', 2)
-            dt = datetime.fromnaiveutc(datetime.duck(startTime))
+            dt = datetime.duck(startTime)
+
+        # convert starttime from UTC
+        dt = datetime.fromnaiveutc(dt)
+        logging.debug('Using chanid={} and startime={}'.format(chanid, dt))
 
         try:
-            rec = Recorded((chanid, dt), DBCache())
+            db = MythDB()
+            rec = Recorded((chanid, dt), db)
             cuts = rec.markup.getuncutlist()
         except MythError as err:
-            sys.stderr.write('Could not read cutlist ({})\n'.format(err.message))
+            logging.error('Could not read cutlist ({})'.format(err.message))
             return 1
 
         # start the transcoding process
@@ -199,7 +212,7 @@ class Transcoder:
             args.append('frame:{}'.format(cuts[0][1]-cuts[0][0]))
         elif len(cuts) > 1:
             # more than one remaining part is not supported yet
-            sys.stderr.write('Unsupported number of cuts ({})\n'.format(len(cuts)))
+            logging.error('Unsupported number of cuts ({})'.format(len(cuts)))
             return 1
 
         cp = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -241,6 +254,8 @@ class Transcoder:
         self.__stopTimer()
         # remove video file on failure
         if res != 0:
+            # print transcoding error output
+            logging.error(cp.stderr.read())
             if os.path.isfile(dstFile):
                 os.remove(dstFile)
             return res
@@ -278,9 +293,15 @@ def main():
     parser.add_argument('-sn', '--season', dest='recSeason', default=0, type=int, help='recording season number')
     parser.add_argument('-en', '--episode', dest='recEpisode', default=0, type=int, help='recording episode number')
     parser.add_argument('-j', '--jobid', dest='jobId', help='mythtv job id')
-    parser.add_argument('--preset', dest='preset', default='HQ 1080p30 Surround', help='Handbrake transcoding preset')
+    parser.add_argument('--preset', dest='preset', default='General/HQ 1080p30 Surround', help='Handbrake transcoding preset')
     parser.add_argument('--timeout', dest='timeout', default=300, type=int, help='timeout in seconds to abort transcoding process')
+    parser.add_argument('-l', '--logfile', dest='logFile', default='', help='optional log file location')
     opts = parser.parse_args()
+
+    if opts.logFile:
+        logging.basicConfig(filename=opts.logFile, level=logging.DEBUG, format='%(asctime)s %(levelname)s: %(message)s')
+
+    logging.debug('Command line: {}'.format(opts))
 
     status = Status(opts.jobId)
 
@@ -317,6 +338,9 @@ def main():
     status.setStatus(Job.RUNNING)
 
     # start transcoding
+    logging.info('Started transcoding \"{}\"'.format(opts.recTitle))
+    logging.info('Source recording file : {}'.format(recPath))
+    logging.info('Destination video file: {}'.format(vidPath))
     res = Transcoder().transcode(recPath, vidPath, opts.preset, opts.timeout)
     if status.getCmd() == Job.STOP:
         status.setStatus(Job.CANCELLED)
