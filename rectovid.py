@@ -30,10 +30,16 @@ class Status:
         
 
     def setComment(self, msg):
+        logging.info(msg)
         if Status.mythJob:
             Status.mythJob.setComment(msg)
+    
+    def setProgress(self, progress, eta):
+        if Status.mythJob:
+            Status.mythJob.setComment('Progress: {} %\nRemaining time: {}'.format(progress, eta))
 
     def setStatus(self, newStatus):
+        logging.debug('Setting job status to {}'.format(newStatus))
         if Status.mythJob:
             Status.mythJob.setStatus(newStatus)
 
@@ -65,7 +71,9 @@ class Status:
         args.append(msgText)
         args.append('--type')
         args.append(msgType)
-        res = os.spawnvp(os.P_WAIT, 'mythutil', args)
+        cp = subprocess.run(args, capture_output=True, text=True)
+        if cp.returncode != 0:
+            logging.error(cp.stderr)
         if msgType == 'error':
             logging.error(msgText)
         elif msgType == "warning":
@@ -178,8 +186,8 @@ class Transcoder:
         if not dt or not chanid:
             logging.debug('Determine chanid and starttime from filename')
             # extract chanid and starttime from recording file name
-            fileBaseName,ext = os.path.splitext(os.path.basename(srcFile))
-            (chanid, startTime) = fileBaseName.split('_', 2)
+            srcFileBaseName,srcFileExt = os.path.splitext(os.path.basename(srcFile))
+            (chanid, startTime) = srcFileBaseName.split('_', 2)
             dt = datetime.duck(startTime)
 
         # convert starttime from UTC
@@ -194,6 +202,71 @@ class Transcoder:
             logging.error('Could not read cutlist ({})'.format(err.message))
             return 1
 
+        if len(cuts):
+            logging.debug('Found {} cuts: {}'.format(len(cuts), cuts))
+
+
+        if len(cuts) == 0:
+            # transcode whole file directly
+            res = self.__transcodePart(srcFile, dstFile, preset, timeout)
+        if len(cuts) == 1:
+            # transcode single part directly
+            res = self.__transcodePart(srcFile, dstFile, preset, timeout, cuts[0])
+        else:
+            # transcode each part on its own
+            cutNumber = 1
+            tmpFiles = []
+            dstFileBaseName,dstFileExt = os.path.splitext(dstFile)
+            for cut in cuts:
+                partDstFile = '{}_part_{}{}'.format(dstFileBaseName, cutNumber, dstFileExt)
+                logging.info('Transcoding part {}/{} to {}'.format(cutNumber, len(cuts), partDstFile))
+                res = self.__transcodePart(srcFile, partDstFile, preset, timeout, cut)
+                if res != 0:
+                    break
+                cutNumber += 1
+                tmpFiles.append(partDstFile)
+
+            # merge transcoded parts
+            if len(cuts) == len(tmpFiles):
+                logging.debug('Merging transcoded parts {}'.format(tmpFiles))
+                listFile = '{}_partlist.txt'.format(dstFileBaseName)
+                with open(listFile, "w") as textFile:
+                    for tmpFile in tmpFiles:
+                        textFile.write('file {}\n'.format(tmpFile))
+
+                tmpFiles.append(listFile)
+                self.status.setComment('Merging transcoded parts')
+
+                args = []
+                args.append('ffmpeg')
+                args.append('-f')
+                args.append('concat')
+                args.append('-safe')
+                args.append('0')
+                args.append('-i')
+                args.append(listFile)
+                args.append('-c')
+                args.append('copy')
+                args.append(dstFile)
+                logging.debug('Executing {}'.format(args))
+                cp = subprocess.run(args, capture_output=True, text=True)
+                res = cp.returncode
+                if res != 0:
+                    logging.error(cp.stderr)
+                    tmpFiles.append(dstFile)
+
+            # delete transcoded parts
+            for tmpFile in tmpFiles:
+                if os.path.isfile(tmpFile):
+                    os.remove(tmpFile)
+
+        if res == 0:
+            # rescan videos
+            self.__scanVideos()
+
+        return res
+
+    def __transcodePart(self, srcFile, dstFile, preset, timeout, frames=None):
         # start the transcoding process
         args = []
         args.append('HandBrakeCLI')
@@ -203,18 +276,16 @@ class Transcoder:
         args.append(srcFile)
         args.append('-o')
         args.append(dstFile)
-        if len(cuts) == 1:
+        if not frames is None:
+            logging.debug('Transcoding from frame {} to {}'.format(frames[0], frames[1]))
             # pass start and end position of remaining part to handbrake
             args.append('--start-at')
-            args.append('frame:{}'.format(cuts[0][0]))
+            args.append('frame:{}'.format(frames[0]))
             # stop it relative to start position
             args.append('--stop-at')
-            args.append('frame:{}'.format(cuts[0][1]-cuts[0][0]))
-        elif len(cuts) > 1:
-            # more than one remaining part is not supported yet
-            logging.error('Unsupported number of cuts ({})'.format(len(cuts)))
-            return 1
+            args.append('frame:{}'.format(frames[1]-frames[0]))
 
+        logging.debug('Executing {}'.format(args))
         cp = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         # start timer to abort transcode process if it hangs
@@ -230,6 +301,8 @@ class Transcoder:
                 lastToken = ''
                 progress = '0'
                 eta = None
+                # new line, restart abort timer
+                self.__startTimer(timeout, cp)
                 for token in line.split():
                     if token == '%':
                         progress = lastToken
@@ -239,9 +312,7 @@ class Transcoder:
                         break
                     lastToken = token
                 if eta and int(float(progress)) > lastProgress:
-                    # new progress, restart abort timer
-                    self.__startTimer(timeout, cp)
-                    self.status.setComment('Progress: {} %\nRemaining time: {}'.format(progress, eta))
+                    self.status.setProgress(progress, eta)
                     lastProgress = int(float(progress))
                     # check if job was stopped externally
                     if self.status.getCmd() == Job.STOP:
@@ -258,13 +329,9 @@ class Transcoder:
             logging.error(cp.stderr.read())
             if os.path.isfile(dstFile):
                 os.remove(dstFile)
-            return res
-
-        # rescan videos
-        self.__scanVideos()
 
         return res
-
+        
     def __scanVideos(self):
         self.status.setComment('Triggering video rescan')
 
@@ -272,7 +339,9 @@ class Transcoder:
         args = []
         args.append('mythutil')
         args.append('--scanvideos')
-        os.spawnvp(os.P_WAIT, 'mythutil', args)
+        cp = subprocess.run(args, capture_output=True, text=True)
+        if cp.returncode != 0:
+            logging.error(cp.stderr)
 
 
 def formatFileSize(num):
