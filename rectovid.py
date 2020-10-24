@@ -5,9 +5,11 @@ import sys
 import os
 import subprocess
 import logging
+import math
 from threading import Timer
 from MythTV import Job, Recorded, MythError, MythDB
 from MythTV.utility import datetime
+from MythTV.services_api import send as api
 
 sys.path.append("/usr/bin")
 
@@ -95,7 +97,7 @@ class VideoFilePath:
         fileName = self.__buildName()
         return os.path.join(dirName, fileName)
 
-    # Uses the following criteria by descending priority
+    # Uses the following criteria by ascending priority
     # 1. Storage dir with maximum free space
     # 2. Directory matching recording title (useful for series)
     # 3. Directory containing files matching the title
@@ -123,6 +125,7 @@ class VideoFilePath:
                     # check file names for match
                     for f in files:
                         if self.__matchTitle(title, f):
+                            logging.debug('Using storage dir with files matching title')
                             return root
         # return directory matching title if found
         if matchDirName:
@@ -262,6 +265,7 @@ class Transcoder:
 
         if res == 0:
             # rescan videos
+            self.__addVideo(srcFile, dstFile)
             self.__scanVideos()
 
         return res
@@ -343,6 +347,94 @@ class Transcoder:
         if cp.returncode != 0:
             logging.error(cp.stderr)
 
+    def __addVideo(self, recpath, vidpath):
+        self.status.setComment("Adding video and metadata to database")
+        try:
+            mbe = api.Send(host='localhost')
+
+            rd = mbe.send(endpoint='Myth/GetHostName')
+            hostname = rd['String']
+
+            # find storage group from video path
+            rd = mbe.send(endpoint='Myth/GetStorageGroupDirs', rest=f'HostName={hostname}&GroupName=Videos')
+            storage_groups = rd['StorageGroupDirList']['StorageGroupDirs']
+            vid_file = None
+            for sg in storage_groups:
+                sg_path = sg['DirName']
+                if vidpath.startswith(sg_path):
+                    vid_file = vidpath[len(sg_path):]
+                    logging.debug(f'Found video in storage group {sg_path} -> {vid_file}')
+                    break
+
+            if not vid_file:
+                return
+
+            # add video
+            data = {'HostName': hostname, 'FileName': vid_file}
+            rd = mbe.send(endpoint='Video/AddVideo', postdata=data, opts={'debug': True, 'wrmi': True})
+            if rd['bool'] == 'true':
+                logging.info('Successfully added video')
+
+            # get video id
+            rd = mbe.send(endpoint='Video/GetVideoByFileName', rest=f'FileName={vid_file}')
+            vid_id = rd['VideoMetadataInfo']['Id']
+            logging.debug(f'Got video id {vid_id}')
+
+            # get recording id
+            rd = mbe.send(endpoint='Dvr/RecordedIdForPathname', rest=f'Pathname={recpath}')
+            rec_id = rd['int'];
+            logging.debug(f'Got recording id {rec_id}')
+
+            # get recording metadata
+            rd = mbe.send(endpoint='Dvr/GetRecorded', rest=f'RecordedId={rec_id}')
+
+            # collect metadata
+            description = rd['Program']['Description']
+            director = []
+            actors = []
+            for member in rd['Program']['Cast']['CastMembers']:
+                if member['Role'] == 'director':
+                    director.append(member['Name'])
+                if member['Role'] == 'actor':
+                    actors.append(member['Name'])
+            vid_length = self.__getVideoLength(vidpath)
+
+            # update video metadata
+            data = {'Id': vid_id}
+            if description:
+                data['Plot'] = description
+            if vid_length >= 1:
+                data['Length'] = vid_length
+            if len(director):
+                data['Director'] = ', '.join(director)
+            if len(actors):
+                data['Cast'] = ','.join(actors)
+            if len(data) > 1:
+                rd = mbe.send(endpoint='Video/UpdateVideoMetadata', postdata=data, opts={'debug': True, 'wrmi': True})
+                if rd['bool'] == 'true':
+                    logging.info('Successfully updated video metadata')
+        except RuntimeError as error:
+            logging.error('\nFatal error: "{}"'.format(error))
+
+    def __getVideoLength(self, filename):
+        args = []
+        args.append('ffprobe')
+        args.append('-hide_banner')
+        args.append('-v')
+        args.append('error')
+        args.append('-show_entries')
+        args.append('format=duration')
+        args.append('-of')
+        args.append('default=noprint_wrappers=1:nokey=1')
+        args.append(filename)
+        logging.debug('Executing {}'.format(args))
+        cp = subprocess.run(args, capture_output=True, text=True)
+        if cp.returncode != 0:
+            return 0
+        try:
+            return int(math.ceil(float(cp.stdout) / 60.0))
+        except ValueError:
+            return 0
 
 def formatFileSize(num):
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
