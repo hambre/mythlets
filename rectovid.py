@@ -26,7 +26,7 @@ class Status:
             Status.mythJob.update(status=Job.STARTING)
             self.setComment('Starting job...')
 
-    def logError(self, errorMsg):
+    def setError(self, errorMsg):
         logging.error(errorMsg)
         self.setComment(errorMsg)
         self.setStatus(Job.ERRORED)
@@ -169,7 +169,7 @@ class Transcoder:
         self.timer = None
 
     def __abortTranscode(self, process):
-        self.status.logError('Aborting transcode due to timeout')
+        self.status.setError('Aborting transcode due to timeout')
         process.kill()
 
     # start timer to abort transcode process if it hangs
@@ -473,14 +473,14 @@ def main():
     elif opts.recDir and opts.recFile:
         recPath = os.path.join(opts.recDir, opts.recFile)
     if not recPath:
-        status.logError('Recording path or recording directoy + recording file not specified')
+        status.setError('Recording path or recording directoy + recording file not specified')
         sys.exit(1)
     if not os.path.isfile(recPath):
-        status.logError('Input recording file does not exist')
+        status.setError('Input recording file does not exist')
         sys.exit(1)
 
     if opts.recTitle is None and opts.recSubtitle is None:
-        status.logError('Title and/or subtitle not specified')
+        status.setError('Title and/or subtitle not specified')
         sys.exit(1)
 
     # build output file path
@@ -491,10 +491,10 @@ def main():
     pathBuilder.episode = opts.recEpisode
     vidPath = pathBuilder.build()
     if not vidPath:
-        status.logError('Could not find video storage directory')
+        status.setError('Could not find video storage directory')
         sys.exit(2)
     if os.path.isfile(vidPath):
-        status.logError('Output video file already exists: \"{}\"'.format(vidPath))
+        status.setError('Output video file already exists: \"{}\"'.format(vidPath))
         sys.exit(3)
 
     status.setStatus(Job.RUNNING)
@@ -510,7 +510,7 @@ def main():
         status.showNotification('Stopped transcoding \"{}\"'.format(opts.recTitle), 'warning')
         sys.exit(4)
     elif res != 0:
-        status.logError('Failed transcoding (error {})'.format(res))
+        status.setError('Failed transcoding (error {})'.format(res))
         status.showNotification('Failed transcoding \"{}\" (error {})'.format(opts.recTitle, res), 'error')
         sys.exit(res)
 
