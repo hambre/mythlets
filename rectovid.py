@@ -6,6 +6,7 @@ import os
 import subprocess
 import logging
 import math
+import urllib.parse
 from threading import Timer
 from MythTV import Job, Recorded, MythError, MythDB
 from MythTV.utility import datetime
@@ -376,12 +377,12 @@ class Transcoder:
                 logging.info('Successfully added video')
 
             # get video id
-            rd = mbe.send(endpoint='Video/GetVideoByFileName', rest=f'FileName={vid_file}')
+            rd = mbe.send(endpoint='Video/GetVideoByFileName', rest=f'FileName={urllib.parse.quote(vid_file)}')
             vid_id = rd['VideoMetadataInfo']['Id']
             logging.debug(f'Got video id {vid_id}')
 
-            # get recording id
-            rd = mbe.send(endpoint='Dvr/RecordedIdForPathname', rest=f'Pathname={recpath}')
+            # get recording id)
+            rd = mbe.send(endpoint='Dvr/RecordedIdForPathname', rest=f'Pathname={urllib.parse.quote(recpath)}')
             rec_id = rd['int'];
             logging.debug(f'Got recording id {rec_id}')
 
