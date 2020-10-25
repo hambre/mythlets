@@ -16,53 +16,53 @@ sys.path.append("/usr/bin")
 
 
 class Status:
-    mythJob = None
-    mythJobId = 0
+    myth_job = None
+    myth_job_id = 0
 
-    def __init__(self, jobId=0):
-        if jobId and not Status.mythJob:
-            Status.mythJobId = jobId
-            Status.mythJob = Job(jobId)
-            Status.mythJob.update(status=Job.STARTING)
+    def __init__(self, job_id=0):
+        if job_id and not Status.myth_job:
+            Status.myth_job_id = job_id
+            Status.myth_job = Job(job_id)
+            Status.myth_job.update(status=Job.STARTING)
             self.set_comment('Starting job...')
 
-    def set_error(self, errorMsg):
-        logging.error(errorMsg)
-        self.set_comment(errorMsg)
+    def set_error(self, msg):
+        logging.error(msg)
+        self.set_comment(msg)
         self.set_status(Job.ERRORED)
         
 
     def set_comment(self, msg):
         logging.info(msg)
-        if Status.mythJob:
-            Status.mythJob.setComment(msg)
+        if Status.myth_job:
+            Status.myth_job.setComment(msg)
     
     def set_progress(self, progress, eta):
-        if Status.mythJob:
-            Status.mythJob.setComment('Progress: {} %\nRemaining time: {}'.format(progress, eta))
+        if Status.myth_job:
+            Status.myth_job.setComment('Progress: {} %\nRemaining time: {}'.format(progress, eta))
 
-    def set_status(self, newStatus):
-        logging.debug('Setting job status to {}'.format(newStatus))
-        if Status.mythJob:
-            Status.mythJob.setStatus(newStatus)
+    def set_status(self, new_status):
+        logging.debug('Setting job status to {}'.format(new_status))
+        if Status.myth_job:
+            Status.myth_job.setStatus(new_status)
 
     def get_cmd(self):
-        if Status.mythJobId == 0:
+        if Status.myth_job_id == 0:
             return Job.UNKNOWN
         # create new job object to pull current state from database
-        return Job(Status.mythJobId).cmds
+        return Job(Status.myth_job_id).cmds
 
     def get_chan_id(self):
-        if Status.mythJob:
-            return Status.mythJob.chanid
+        if Status.myth_job:
+            return Status.myth_job.chanid
         return None
 
     def get_start_time(self):
-        if Status.mythJob:
-            return Status.mythJob.starttime
+        if Status.myth_job:
+            return Status.myth_job.starttime
         return None
 
-    def show_notification(self, msgText, msgType):
+    def show_notification(self, msg, type):
         args = []
         args.append('mythutil')
         args.append('--notification')
@@ -71,18 +71,18 @@ class Status:
         args.append('--timeout')
         args.append('60')
         args.append('--message_text')
-        args.append(msgText)
+        args.append(msg)
         args.append('--type')
-        args.append(msgType)
+        args.append(type)
         cp = subprocess.run(args, capture_output=True, text=True)
         if cp.returncode != 0:
             logging.error(cp.stderr)
-        if msgType == 'error':
-            logging.error(msgText)
-        elif msgType == "warning":
-            logging.warning(msgText)
-        elif msgType == "normal":
-            logging.info(msgText)
+        if type == 'error':
+            logging.error(msg)
+        elif type == "warning":
+            logging.warning(msg)
+        elif type == "normal":
+            logging.info(msg)
 
 class VideoFilePath:
     def __init__(self):
@@ -92,11 +92,11 @@ class VideoFilePath:
         self.episode = 0
 
     def build(self):
-        dirName = self._build_dir()
-        if not dirName:
+        dir_name = self._build_dir()
+        if not dir_name:
             return None
-        fileName = self._build_name()
-        return os.path.join(dirName, fileName)
+        file_name = self._build_name()
+        return os.path.join(dir_name, file_name)
 
     # Uses the following criteria by ascending priority
     # 1. Storage dir with maximum free space
@@ -104,37 +104,37 @@ class VideoFilePath:
     # 3. Directory containing files matching the title
     def _build_dir(self):
         db = MythDB()
-        matchDirName = None
+        matched_dir_name = None
         title = "_".join(self.title.split())
-        maxFreeSpace = 0
-        maxFreeDirName = None
+        max_free_space = 0
+        max_space_dir_name = None
         for sg in db.getStorageGroup(groupname='Videos'):
             # search given group
             if sg.local and os.path.isdir(sg.dirname):
                 # get avaliable space of storage group partition
                 # and use storage group with max. available space
-                freeSpace = self._get_free_space(sg.dirname)
-                logging.debug('Storage group {} -> space {}'.format(sg.dirname, freeSpace))
-                if freeSpace > maxFreeSpace:
-                    maxFreeDirName = sg.dirname
-                    maxFreeSpace = freeSpace
+                free_space = self._get_free_space(sg.dirname)
+                logging.debug('Storage group {} -> space {}'.format(sg.dirname, free_space))
+                if free_space > max_free_space:
+                    max_space_dir_name = sg.dirname
+                    max_free_space = free_space
                 for root, dirs, files in os.walk(sg.dirname, followlinks=True):
                     # first check subdir for match
                     for d in dirs:
                         if self._match_title(title, d):
-                            matchDirName = os.path.join(root, d)
+                            matched_dir_name = os.path.join(root, d)
                     # check file names for match
                     for f in files:
                         if self._match_title(title, f):
                             logging.debug('Using storage dir with files matching title')
                             return root
         # return directory matching title if found
-        if matchDirName:
+        if matched_dir_name:
             logging.debug('Using storage dir matching title')
-            return matchDirName
+            return matched_dir_name
         # return storage directory with max free space
         logging.debug('Using storage dir with max. space')
-        return maxFreeDirName
+        return max_space_dir_name
 
     def _build_name(self):
         # build output file name: "The_title(_-_|_SxxEyy_][The_Subtitle].m4v"
@@ -149,8 +149,8 @@ class VideoFilePath:
             parts.append(self.subtitle)
         return "_".join(' '.join(parts).split()) + ".m4v"
 
-    def _get_free_space(self, filename):
-        stats = os.statvfs(filename)
+    def _get_free_space(self, file_name):
+        stats = os.statvfs(file_name)
         return stats.f_bfree * stats.f_frsize
 
     # find storage directory by recording title
@@ -183,24 +183,25 @@ class Transcoder:
             self.timer.cancel()
         self.timer = None
 
-    def transcode(self, srcFile, dstFile, preset, timeout):
-        # obtain cutlist
-        dt = self.status.get_start_time()
-        chanid = self.status.get_chan_id()
-        if not dt or not chanid:
+    def transcode(self, src_file, dst_file, preset, timeout):
+        # get channel id and start time to identify recording
+        chan_id = self.status.get_chan_id()
+        start_time = self.status.get_start_time()
+        if not start_time or not chan_id:
             logging.debug('Determine chanid and starttime from filename')
             # extract chanid and starttime from recording file name
-            srcFileBaseName,srcFileExt = os.path.splitext(os.path.basename(srcFile))
-            (chanid, startTime) = srcFileBaseName.split('_', 2)
-            dt = datetime.duck(startTime)
+            src_file_base_name,src_file_ext = os.path.splitext(os.path.basename(src_file))
+            (chan_id, start_time) = src_file_base_name.split('_', 2)
+            start_time = datetime.duck(start_time)
 
         # convert starttime from UTC
-        dt = datetime.fromnaiveutc(dt)
-        logging.debug('Using chanid={} and startime={}'.format(chanid, dt))
+        start_time = datetime.fromnaiveutc(start_time)
+        logging.debug('Using chanid={} and startime={}'.format(chan_id, start_time))
 
+        # obtain cutlist
         try:
             db = MythDB()
-            rec = Recorded((chanid, dt), db)
+            rec = Recorded((chan_id, start_time), db)
             cuts = rec.markup.getuncutlist()
         except MythError as err:
             logging.error('Could not read cutlist ({})'.format(err.message))
@@ -209,36 +210,35 @@ class Transcoder:
         if len(cuts):
             logging.debug('Found {} cuts: {}'.format(len(cuts), cuts))
 
-
         if len(cuts) == 0:
             # transcode whole file directly
-            res = self._transcode_part(srcFile, dstFile, preset, timeout)
+            res = self._transcode_part(src_file, dst_file, preset, timeout)
         if len(cuts) == 1:
             # transcode single part directly
-            res = self._transcode_part(srcFile, dstFile, preset, timeout, cuts[0])
+            res = self._transcode_part(src_file, dst_file, preset, timeout, cuts[0])
         else:
             # transcode each part on its own
-            cutNumber = 1
-            tmpFiles = []
-            dstFileBaseName,dstFileExt = os.path.splitext(dstFile)
+            cut_number = 1
+            tmp_files = []
+            dst_file_base_name,dst_file_ext = os.path.splitext(dst_file)
             for cut in cuts:
-                partDstFile = '{}_part_{}{}'.format(dstFileBaseName, cutNumber, dstFileExt)
-                logging.info('Transcoding part {}/{} to {}'.format(cutNumber, len(cuts), partDstFile))
-                res = self._transcode_part(srcFile, partDstFile, preset, timeout, cut)
+                dst_file_part = '{}_part_{}{}'.format(dst_file_base_name, cut_number, dst_file_ext)
+                logging.info('Transcoding part {}/{} to {}'.format(cut_number, len(cuts), dst_file_part))
+                res = self._transcode_part(src_file, dst_file_part, preset, timeout, cut)
                 if res != 0:
                     break
-                cutNumber += 1
-                tmpFiles.append(partDstFile)
+                cut_number += 1
+                tmp_files.append(dst_file_part)
 
             # merge transcoded parts
-            if len(cuts) == len(tmpFiles):
-                logging.debug('Merging transcoded parts {}'.format(tmpFiles))
-                listFile = '{}_partlist.txt'.format(dstFileBaseName)
-                with open(listFile, "w") as textFile:
-                    for tmpFile in tmpFiles:
-                        textFile.write('file {}\n'.format(tmpFile))
+            if len(cuts) == len(tmp_files):
+                logging.debug('Merging transcoded parts {}'.format(tmp_files))
+                list_file = '{}_partlist.txt'.format(dst_file_base_name)
+                with open(list_file, "w") as text_file:
+                    for tmp_file in tmp_files:
+                        text_file.write('file {}\n'.format(tmp_file))
 
-                tmpFiles.append(listFile)
+                tmp_files.append(list_file)
                 self.status.set_comment('Merging transcoded parts')
 
                 args = []
@@ -248,39 +248,39 @@ class Transcoder:
                 args.append('-safe')
                 args.append('0')
                 args.append('-i')
-                args.append(listFile)
+                args.append(list_file)
                 args.append('-c')
                 args.append('copy')
-                args.append(dstFile)
+                args.append(dst_file)
                 logging.debug('Executing {}'.format(args))
                 cp = subprocess.run(args, capture_output=True, text=True)
                 res = cp.returncode
                 if res != 0:
                     logging.error(cp.stderr)
-                    tmpFiles.append(dstFile)
+                    tmp_files.append(dst_file)
 
             # delete transcoded parts
-            for tmpFile in tmpFiles:
-                if os.path.isfile(tmpFile):
-                    os.remove(tmpFile)
+            for tmp_file in tmp_files:
+                if os.path.isfile(tmp_file):
+                    os.remove(tmp_file)
 
         if res == 0:
             # rescan videos
-            self._add_video(srcFile, dstFile)
+            self._add_video(src_file, dst_file)
             self._scan_videos()
 
         return res
 
-    def _transcode_part(self, srcFile, dstFile, preset, timeout, frames=None):
+    def _transcode_part(self, src_file, dst_file, preset, timeout, frames=None):
         # start the transcoding process
         args = []
         args.append('HandBrakeCLI')
         args.append('--preset')
         args.append(preset)
         args.append('-i')
-        args.append(srcFile)
+        args.append(src_file)
         args.append('-o')
-        args.append(dstFile)
+        args.append(dst_file)
         if not frames is None:
             logging.debug('Transcoding from frame {} to {}'.format(frames[0], frames[1]))
             # pass start and end position of remaining part to handbrake
@@ -297,28 +297,28 @@ class Transcoder:
         self._start_timer(timeout, cp)
 
         line = ''
-        lastProgress = 0
+        last_progress = 0
         while True:
             nl = cp.stdout.read(1)
             if nl == '' and cp.poll() is not None:
                 break  # Aborted, no characters available, process died.
             if nl == '\n':
-                lastToken = ''
+                last_token = ''
                 progress = '0'
                 eta = None
                 # new line, restart abort timer
                 self._start_timer(timeout, cp)
                 for token in line.split():
                     if token == '%':
-                        progress = lastToken
-                    if lastToken == 'ETA':
+                        progress = last_token
+                    if last_token == 'ETA':
                         eta = token.replace(')', '')
                     if eta and progress:
                         break
-                    lastToken = token
-                if eta and int(float(progress)) > lastProgress:
+                    last_token = token
+                if eta and int(float(progress)) > last_progress:
                     self.status.set_progress(progress, eta)
-                    lastProgress = int(float(progress))
+                    last_progress = int(float(progress))
                     # check if job was stopped externally
                     if self.status.get_cmd() == Job.STOP:
                         cp.kill()
@@ -332,8 +332,8 @@ class Transcoder:
         if res != 0:
             # print transcoding error output
             logging.error(cp.stderr.read())
-            if os.path.isfile(dstFile):
-                os.remove(dstFile)
+            if os.path.isfile(dst_file):
+                os.remove(dst_file)
 
         return res
         
@@ -348,22 +348,22 @@ class Transcoder:
         if cp.returncode != 0:
             logging.error(cp.stderr)
 
-    def _add_video(self, recpath, vidpath):
+    def _add_video(self, rec_path, vid_path):
         self.status.set_comment("Adding video and metadata to database")
         try:
             mbe = api.Send(host='localhost')
 
             rd = mbe.send(endpoint='Myth/GetHostName')
-            hostname = rd['String']
+            host_name = rd['String']
 
             # find storage group from video path
-            rd = mbe.send(endpoint='Myth/GetStorageGroupDirs', rest=f'HostName={hostname}&GroupName=Videos')
+            rd = mbe.send(endpoint='Myth/GetStorageGroupDirs', rest=f'HostName={host_name}&GroupName=Videos')
             storage_groups = rd['StorageGroupDirList']['StorageGroupDirs']
             vid_file = None
             for sg in storage_groups:
                 sg_path = sg['DirName']
-                if vidpath.startswith(sg_path):
-                    vid_file = vidpath[len(sg_path):]
+                if vid_path.startswith(sg_path):
+                    vid_file = vid_path[len(sg_path):]
                     logging.debug(f'Found video in storage group {sg_path} -> {vid_file}')
                     break
 
@@ -371,7 +371,7 @@ class Transcoder:
                 return
 
             # add video
-            data = {'HostName': hostname, 'FileName': vid_file}
+            data = {'HostName': host_name, 'FileName': vid_file}
             rd = mbe.send(endpoint='Video/AddVideo', postdata=data, opts={'debug': True, 'wrmi': True})
             if rd['bool'] == 'true':
                 logging.info('Successfully added video')
@@ -382,7 +382,7 @@ class Transcoder:
             logging.debug(f'Got video id {vid_id}')
 
             # get recording id)
-            rd = mbe.send(endpoint='Dvr/RecordedIdForPathname', rest=f'Pathname={urllib.parse.quote(recpath)}')
+            rd = mbe.send(endpoint='Dvr/RecordedIdForPathname', rest=f'Pathname={urllib.parse.quote(rec_path)}')
             rec_id = rd['int'];
             logging.debug(f'Got recording id {rec_id}')
 
@@ -398,7 +398,7 @@ class Transcoder:
                     director.append(member['Name'])
                 if member['Role'] == 'actor':
                     actors.append(member['Name'])
-            vid_length = self._get_video_length(vidpath)
+            vid_length = self._get_video_length(vid_path)
 
             # update video metadata
             data = {'Id': vid_id}
@@ -447,78 +447,78 @@ def format_file_size(num):
 
 def main():
     parser = argparse.ArgumentParser(description='Transcoding recording and move to videos')
-    parser.add_argument('-f', '--file', dest='recFile', help='recording file name')
-    parser.add_argument('-d', '--dir', dest='recDir', help='recording directory name')
-    parser.add_argument('-p', '--path', dest='recPath', help='recording path name')
-    parser.add_argument('-t', '--title', dest='recTitle', help='recording title')
-    parser.add_argument('-s', '--subtitle', dest='recSubtitle', help='recording subtitle')
-    parser.add_argument('-sn', '--season', dest='recSeason', default=0, type=int, help='recording season number')
-    parser.add_argument('-en', '--episode', dest='recEpisode', default=0, type=int, help='recording episode number')
-    parser.add_argument('-j', '--jobid', dest='jobId', help='mythtv job id')
+    parser.add_argument('-f', '--file', dest='rec_file', help='recording file name')
+    parser.add_argument('-d', '--dir', dest='rec_dir', help='recording directory name')
+    parser.add_argument('-p', '--path', dest='rec_path', help='recording path name')
+    parser.add_argument('-t', '--title', dest='rec_title', help='recording title')
+    parser.add_argument('-s', '--subtitle', dest='rec_subtitle', help='recording subtitle')
+    parser.add_argument('-sn', '--season', dest='rec_season', default=0, type=int, help='recording season number')
+    parser.add_argument('-en', '--episode', dest='rec_episode', default=0, type=int, help='recording episode number')
+    parser.add_argument('-j', '--jobid', dest='job_id', help='mythtv job id')
     parser.add_argument('--preset', dest='preset', default='General/HQ 1080p30 Surround', help='Handbrake transcoding preset')
     parser.add_argument('--timeout', dest='timeout', default=300, type=int, help='timeout in seconds to abort transcoding process')
-    parser.add_argument('-l', '--logfile', dest='logFile', default='', help='optional log file location')
+    parser.add_argument('-l', '--logfile', dest='log_file', default='', help='optional log file location')
     opts = parser.parse_args()
 
-    if opts.logFile:
-        logging.basicConfig(filename=opts.logFile, level=logging.DEBUG, format='%(asctime)s %(levelname)s: %(message)s')
+    if opts.log_file:
+        logging.basicConfig(filename=opts.log_file, level=logging.DEBUG, format='%(asctime)s %(levelname)s: %(message)s')
 
     logging.debug('Command line: {}'.format(opts))
 
-    status = Status(opts.jobId)
+    status = Status(opts.job_id)
 
-    recPath = None
-    if opts.recPath:
-        recPath = opts.recPath
-    elif opts.recDir and opts.recFile:
-        recPath = os.path.join(opts.recDir, opts.recFile)
-    if not recPath:
+    rec_path = None
+    if opts.rec_path:
+        rec_path = opts.rec_path
+    elif opts.rec_dir and opts.rec_file:
+        rec_path = os.path.join(opts.rec_dir, opts.rec_file)
+    if not rec_path:
         status.set_error('Recording path or recording directoy + recording file not specified')
         sys.exit(1)
-    if not os.path.isfile(recPath):
+    if not os.path.isfile(rec_path):
         status.set_error('Input recording file does not exist')
         sys.exit(1)
 
-    if opts.recTitle is None and opts.recSubtitle is None:
+    if opts.rec_title is None and opts.rec_subtitle is None:
         status.set_error('Title and/or subtitle not specified')
         sys.exit(1)
 
     # build output file path
-    pathBuilder = VideoFilePath()
-    pathBuilder.title = opts.recTitle
-    pathBuilder.subtitle = opts.recSubtitle
-    pathBuilder.season = opts.recSeason
-    pathBuilder.episode = opts.recEpisode
-    vidPath = pathBuilder.build()
-    if not vidPath:
+    path_builder = VideoFilePath()
+    path_builder.title = opts.rec_title
+    path_builder.subtitle = opts.rec_subtitle
+    path_builder.season = opts.rec_season
+    path_builder.episode = opts.rec_episode
+    vid_path = path_builder.build()
+    if not vid_path:
         status.set_error('Could not find video storage directory')
         sys.exit(2)
-    if os.path.isfile(vidPath):
-        status.set_error('Output video file already exists: \"{}\"'.format(vidPath))
+    if os.path.isfile(vid_path):
+        status.set_error('Output video file already exists: \"{}\"'.format(vid_path))
         sys.exit(3)
 
     status.set_status(Job.RUNNING)
 
     # start transcoding
-    logging.info('Started transcoding \"{}\"'.format(opts.recTitle))
-    logging.info('Source recording file : {}'.format(recPath))
-    logging.info('Destination video file: {}'.format(vidPath))
-    res = Transcoder().transcode(recPath, vidPath, opts.preset, opts.timeout)
+    logging.info('Started transcoding \"{}\"'.format(opts.rec_title))
+    logging.info('Source recording file : {}'.format(rec_path))
+    logging.info('Destination video file: {}'.format(vid_path))
+    res = Transcoder().transcode(rec_path, vid_path, opts.preset, opts.timeout)
     if status.get_cmd() == Job.STOP:
         status.set_status(Job.CANCELLED)
         status.set_comment('Stopped transcoding')
-        status.show_notification('Stopped transcoding \"{}\"'.format(opts.recTitle), 'warning')
+        status.show_notification('Stopped transcoding \"{}\"'.format(opts.rec_title), 'warning')
         sys.exit(4)
     elif res != 0:
         status.set_error('Failed transcoding (error {})'.format(res))
-        status.show_notification('Failed transcoding \"{}\" (error {})'.format(opts.recTitle, res), 'error')
+        status.show_notification('Failed transcoding \"{}\" (error {})'.format(opts.rec_title, res), 'error')
         sys.exit(res)
 
-    recSize = os.stat(recPath).st_size
-    vidSize = os.stat(vidPath).st_size
-    sizeStatus = format_file_size(recSize) + ' => ' + format_file_size(vidSize)
-    status.show_notification('Finished transcoding \"{}\"'.format(opts.recTitle) + '\n' + sizeStatus, 'normal')
-    status.set_comment('Finished transcoding\n' + sizeStatus)
+    rec_size = os.stat(rec_path).st_size
+    vid_size = os.stat(vid_path).st_size
+    size_status = format_file_size(rec_size) + ' => ' + format_file_size(vid_size)
+    status.show_notification('Finished transcoding \"{}\"'.format(opts.rec_title) + '\n' + size_status, 'normal')
+    status.set_comment('Finished transcoding\n' + size_status)
     status.set_status(Job.FINISHED)
 
     # .. the end
