@@ -39,10 +39,10 @@ class Status:
     
     def set_progress(self, progress, eta):
         if Status.myth_job:
-            Status.myth_job.setComment('Progress: {} %\nRemaining time: {}'.format(progress, eta))
+            Status.myth_job.setComment(f'Progress: {progress} %\nRemaining time: {eta}')
 
     def set_status(self, new_status):
-        logging.debug('Setting job status to {}'.format(new_status))
+        logging.debug(f'Setting job status to {new_status}')
         if Status.myth_job:
             Status.myth_job.setStatus(new_status)
 
@@ -114,7 +114,7 @@ class VideoFilePath:
                 # get avaliable space of storage group partition
                 # and use storage group with max. available space
                 free_space = self._get_free_space(sg.dirname)
-                logging.debug('Storage group {} -> space {}'.format(sg.dirname, free_space))
+                logging.debug(f'Storage group {sg.dirname} -> space {free_space}')
                 if free_space > max_free_space:
                     max_space_dir_name = sg.dirname
                     max_free_space = free_space
@@ -142,7 +142,7 @@ class VideoFilePath:
         if self.title and self.title != "":
             parts.append(self.title)
         if self.season > 0 and self.episode > 0:
-            parts.append("S{:0>2}E{:0>2}".format(self.season, self.episode))
+            parts.append(f'S{self.season:02}E{self.episode:02}')
         elif self.subtitle and self.subtitle != "":
             parts.append('-')
         if self.subtitle and self.subtitle != "":
@@ -196,7 +196,7 @@ class Transcoder:
 
         # convert starttime from UTC
         start_time = datetime.fromnaiveutc(start_time)
-        logging.debug('Using chanid={} and startime={}'.format(chan_id, start_time))
+        logging.debug(f'Using chanid={chan_id} and starttime={start_time}')
 
         # obtain cutlist
         try:
@@ -204,11 +204,11 @@ class Transcoder:
             rec = Recorded((chan_id, start_time), db)
             cuts = rec.markup.getuncutlist()
         except MythError as err:
-            logging.error('Could not read cutlist ({})'.format(err.message))
+            logging.error(f'Could not read cutlist ({err.message})')
             return 1
 
         if len(cuts):
-            logging.debug('Found {} cuts: {}'.format(len(cuts), cuts))
+            logging.debug(f'Found {len(cuts)} cuts: {cuts}')
 
         if len(cuts) == 0:
             # transcode whole file directly
@@ -222,8 +222,8 @@ class Transcoder:
             tmp_files = []
             dst_file_base_name,dst_file_ext = os.path.splitext(dst_file)
             for cut in cuts:
-                dst_file_part = '{}_part_{}{}'.format(dst_file_base_name, cut_number, dst_file_ext)
-                logging.info('Transcoding part {}/{} to {}'.format(cut_number, len(cuts), dst_file_part))
+                dst_file_part = f'{dst_file_base_name}_part_{cut_number}{dst_file_ext}'
+                logging.info(f'Transcoding part {cut_number}/{len(cuts)} to {dst_file_part}')
                 res = self._transcode_part(src_file, dst_file_part, preset, timeout, cut)
                 if res != 0:
                     break
@@ -232,11 +232,11 @@ class Transcoder:
 
             # merge transcoded parts
             if len(cuts) == len(tmp_files):
-                logging.debug('Merging transcoded parts {}'.format(tmp_files))
-                list_file = '{}_partlist.txt'.format(dst_file_base_name)
+                logging.debug(f'Merging transcoded parts {tmp_files}')
+                list_file = f'{dst_file_base_name}_partlist.txt'
                 with open(list_file, "w") as text_file:
                     for tmp_file in tmp_files:
-                        text_file.write('file {}\n'.format(tmp_file))
+                        text_file.write(f'file {tmp_file}\n')
 
                 tmp_files.append(list_file)
                 self.status.set_comment('Merging transcoded parts')
@@ -252,7 +252,7 @@ class Transcoder:
                 args.append('-c')
                 args.append('copy')
                 args.append(dst_file)
-                logging.debug('Executing {}'.format(args))
+                logging.debug(f'Executing {args}')
                 cp = subprocess.run(args, capture_output=True, text=True)
                 res = cp.returncode
                 if res != 0:
@@ -282,15 +282,15 @@ class Transcoder:
         args.append('-o')
         args.append(dst_file)
         if not frames is None:
-            logging.debug('Transcoding from frame {} to {}'.format(frames[0], frames[1]))
+            logging.debug(f'Transcoding from frame {frames[0]} to {frames[1]}')
             # pass start and end position of remaining part to handbrake
             args.append('--start-at')
-            args.append('frame:{}'.format(frames[0]))
+            args.append(f'frame:{frames[0]}')
             # stop it relative to start position
             args.append('--stop-at')
-            args.append('frame:{}'.format(frames[1]-frames[0]))
+            args.append(f'frame:{frames[1]-frames[0]}')
 
-        logging.debug('Executing {}'.format(args))
+        logging.debug(f'Executing {args}')
         cp = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         # start timer to abort transcode process if it hangs
@@ -415,7 +415,7 @@ class Transcoder:
                 if rd['bool'] == 'true':
                     logging.info('Successfully updated video metadata')
         except RuntimeError as error:
-            logging.error('\nFatal error: "{}"'.format(error))
+            logging.error(f'\nFatal error: "{error}"')
 
     def _get_video_length(self, filename):
         args = []
@@ -428,7 +428,7 @@ class Transcoder:
         args.append('-of')
         args.append('default=noprint_wrappers=1:nokey=1')
         args.append(filename)
-        logging.debug('Executing {}'.format(args))
+        logging.debug(f'Executing {args}')
         cp = subprocess.run(args, capture_output=True, text=True)
         if cp.returncode != 0:
             return 0
@@ -463,7 +463,7 @@ def main():
     if opts.log_file:
         logging.basicConfig(filename=opts.log_file, level=logging.DEBUG, format='%(asctime)s %(levelname)s: %(message)s')
 
-    logging.debug('Command line: {}'.format(opts))
+    logging.debug(f'Command line: {opts}')
 
     status = Status(opts.job_id)
 
@@ -494,31 +494,31 @@ def main():
         status.set_error('Could not find video storage directory')
         sys.exit(2)
     if os.path.isfile(vid_path):
-        status.set_error('Output video file already exists: \"{}\"'.format(vid_path))
+        status.set_error(f'Output video file already exists: \"{vid_path}\"')
         sys.exit(3)
 
     status.set_status(Job.RUNNING)
 
     # start transcoding
-    logging.info('Started transcoding \"{}\"'.format(opts.rec_title))
-    logging.info('Source recording file : {}'.format(rec_path))
-    logging.info('Destination video file: {}'.format(vid_path))
+    logging.info(f'Started transcoding \"{opts.rec_title}\"')
+    logging.info(f'Source recording file : {rec_path}')
+    logging.info(f'Destination video file: {vid_path}')
     res = Transcoder().transcode(rec_path, vid_path, opts.preset, opts.timeout)
     if status.get_cmd() == Job.STOP:
         status.set_status(Job.CANCELLED)
         status.set_comment('Stopped transcoding')
-        status.show_notification('Stopped transcoding \"{}\"'.format(opts.rec_title), 'warning')
+        status.show_notification(f'Stopped transcoding \"{opts.rec_title}\"', 'warning')
         sys.exit(4)
     elif res != 0:
-        status.set_error('Failed transcoding (error {})'.format(res))
-        status.show_notification('Failed transcoding \"{}\" (error {})'.format(opts.rec_title, res), 'error')
+        status.set_error(f'Failed transcoding (error {res})')
+        status.show_notification(f'Failed transcoding \"{opts.rec_title}\" (error {res})', 'error')
         sys.exit(res)
 
     rec_size = os.stat(rec_path).st_size
     vid_size = os.stat(vid_path).st_size
-    size_status = format_file_size(rec_size) + ' => ' + format_file_size(vid_size)
-    status.show_notification('Finished transcoding \"{}\"'.format(opts.rec_title) + '\n' + size_status, 'normal')
-    status.set_comment('Finished transcoding\n' + size_status)
+    size_status = f'{format_file_size(rec_size)} => {format_file_size(vid_size)}'
+    status.show_notification(f'Finished transcoding "{opts.rec_title}"\n{size_status}', 'normal')
+    status.set_comment(f'Finished transcoding\n{size_status}')
     status.set_status(Job.FINISHED)
 
     # .. the end
