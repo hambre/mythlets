@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+""" Transcodes a MythTV recording and puts it into the video storage """
+
 import argparse
 import sys
 import os
@@ -27,42 +29,50 @@ class Status:
             self.set_comment('Starting job...')
 
     def set_error(self, msg):
+        """ Set an error state to the myth job object """
         logging.error(msg)
         self.set_comment(msg)
         self.set_status(Job.ERRORED)
         
 
     def set_comment(self, msg):
+        """ Sets a comment text to the myth job object """
         logging.info(msg)
         if Status.myth_job:
             Status.myth_job.setComment(msg)
     
     def set_progress(self, progress, eta):
+        """ Sets progress as a comment to the myth job object """
         if Status.myth_job:
             Status.myth_job.setComment(f'Progress: {progress} %\nRemaining time: {eta}')
 
     def set_status(self, new_status):
+        """ Sets a state to the myth job object """
         logging.debug(f'Setting job status to {new_status}')
         if Status.myth_job:
             Status.myth_job.setStatus(new_status)
 
     def get_cmd(self):
+        """ Reads the current myth job state from the database """
         if Status.myth_job_id == 0:
             return Job.UNKNOWN
         # create new job object to pull current state from database
         return Job(Status.myth_job_id).cmds
 
     def get_chan_id(self):
+        """ Reads the chanid from the myth job object """
         if Status.myth_job:
             return Status.myth_job.chanid
         return None
 
     def get_start_time(self):
+        """ Reads the starttime from the myth job object """
         if Status.myth_job:
             return Status.myth_job.starttime
         return None
 
     def show_notification(self, msg, type):
+        """ Displays a visual notification on active frontends """
         args = []
         args.append('mythutil')
         args.append('--notification')
@@ -92,17 +102,21 @@ class VideoFilePath:
         self.episode = 0
 
     def build(self):
+        """ Builds the video file path """
         dir_name = self._build_dir()
         if not dir_name:
             return None
         file_name = self._build_name()
         return os.path.join(dir_name, file_name)
 
-    # Uses the following criteria by ascending priority
-    # 1. Storage dir with maximum free space
-    # 2. Directory matching recording title (useful for series)
-    # 3. Directory containing files matching the title
     def _build_dir(self):
+        """ Builds the video file directory.
+            It scans all video storage dirs to find the best
+            one using the following criteria by ascending priority:
+            1. Storage dir with maximum free space
+            2. Directory matching recording title (useful for series)
+            3. Directory containing files matching the title
+        """
         db = MythDB()
         matched_dir_name = None
         title = "_".join(self.title.split())
@@ -137,7 +151,7 @@ class VideoFilePath:
         return max_space_dir_name
 
     def _build_name(self):
-        # build output file name: "The_title(_-_|_SxxEyy_][The_Subtitle].m4v"
+        """ Builds video file name: "The_title(_-_|_SxxEyy_][The_Subtitle].m4v" """
         parts = []
         if self.title and self.title != "":
             parts.append(self.title)
@@ -150,11 +164,12 @@ class VideoFilePath:
         return "_".join(' '.join(parts).split()) + ".m4v"
 
     def _get_free_space(self, file_name):
+        """ Returns the free space of the partition of the specified file/directory """
         stats = os.statvfs(file_name)
         return stats.f_bfree * stats.f_frsize
 
-    # find storage directory by recording title
     def _match_title(self, title, name):
+        """ Checks if file or directory name starts with specified title """
         t = title.lower()
         n = name.lower()
         for c in (' ', '_', '-'):
@@ -169,21 +184,30 @@ class Transcoder:
         self.timer = None
 
     def _abort(self, process):
+        """ Abort transcoding after timeout """
         self.status.set_error('Aborting transcode due to timeout')
         process.kill()
 
-    # start timer to abort transcode process if it hangs
     def _start_timer(self, timeout, cp):
+        """ Start timer to abort transcode process if it hangs """
         self._stop_timer()
         self.timer = Timer(timeout, self._abort, [cp])
         self.timer.start()
 
     def _stop_timer(self):
+        """ Stop the abort transcoding timer """
         if self.timer is not None:
             self.timer.cancel()
         self.timer = None
 
     def transcode(self, src_file, dst_file, preset, timeout):
+        """ Transcode the source file to the destination file using the specified preset
+            The cutlist of the recording (source file) is used to transcode
+            multiple parts of the recording if neccessary and then merged into the final
+            destination file.
+            At the end the video is added to the database and metadata of the recording
+            is copied to the video metadata.
+        """
         # get channel id and start time to identify recording
         chan_id = self.status.get_chan_id()
         start_time = self.status.get_start_time()
@@ -272,6 +296,11 @@ class Transcoder:
         return res
 
     def _transcode_part(self, src_file, dst_file, preset, timeout, frames=None):
+        """ Start HandBrake to transcodes all or a single part (identified by
+            start and end frame) of the source file
+            A timer is used to abort the transcoding if there was no progress
+            detected within a specfied timeout period.
+        """
         # start the transcoding process
         args = []
         args.append('HandBrakeCLI')
@@ -338,6 +367,7 @@ class Transcoder:
         return res
         
     def _scan_videos(self):
+        """ Triggers a video scan using mythutil """
         self.status.set_comment('Triggering video rescan')
 
         # scan videos
@@ -349,6 +379,7 @@ class Transcoder:
             logging.error(cp.stderr)
 
     def _add_video(self, rec_path, vid_path):
+        """ Adds the video to the database and copies recording metadata"""
         self.status.set_comment("Adding video and metadata to database")
         try:
             mbe = api.Send(host='localhost')
@@ -418,6 +449,7 @@ class Transcoder:
             logging.error(f'\nFatal error: "{error}"')
 
     def _get_video_length(self, filename):
+        """ Determines the video length using ffprobe """
         args = []
         args.append('ffprobe')
         args.append('-hide_banner')
@@ -438,6 +470,7 @@ class Transcoder:
             return 0
 
 def format_file_size(num):
+    """ Formats the given number as a file size """
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
         if abs(num) < 1000.0:
             return "%3.1f %s" % (num, unit)
