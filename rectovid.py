@@ -24,45 +24,45 @@ class Status:
             Status.mythJobId = jobId
             Status.mythJob = Job(jobId)
             Status.mythJob.update(status=Job.STARTING)
-            self.setComment('Starting job...')
+            self.set_comment('Starting job...')
 
-    def setError(self, errorMsg):
+    def set_error(self, errorMsg):
         logging.error(errorMsg)
-        self.setComment(errorMsg)
-        self.setStatus(Job.ERRORED)
+        self.set_comment(errorMsg)
+        self.set_status(Job.ERRORED)
         
 
-    def setComment(self, msg):
+    def set_comment(self, msg):
         logging.info(msg)
         if Status.mythJob:
             Status.mythJob.setComment(msg)
     
-    def setProgress(self, progress, eta):
+    def set_progress(self, progress, eta):
         if Status.mythJob:
             Status.mythJob.setComment('Progress: {} %\nRemaining time: {}'.format(progress, eta))
 
-    def setStatus(self, newStatus):
+    def set_status(self, newStatus):
         logging.debug('Setting job status to {}'.format(newStatus))
         if Status.mythJob:
             Status.mythJob.setStatus(newStatus)
 
-    def getCmd(self):
+    def get_cmd(self):
         if Status.mythJobId == 0:
             return Job.UNKNOWN
         # create new job object to pull current state from database
         return Job(Status.mythJobId).cmds
 
-    def getChanId(self):
+    def get_chan_id(self):
         if Status.mythJob:
             return Status.mythJob.chanid
         return None
 
-    def getStartTime(self):
+    def get_start_time(self):
         if Status.mythJob:
             return Status.mythJob.starttime
         return None
 
-    def showNotification(self, msgText, msgType):
+    def show_notification(self, msgText, msgType):
         args = []
         args.append('mythutil')
         args.append('--notification')
@@ -92,17 +92,17 @@ class VideoFilePath:
         self.episode = 0
 
     def build(self):
-        dirName = self.__buildDir()
+        dirName = self._build_dir()
         if not dirName:
             return None
-        fileName = self.__buildName()
+        fileName = self._build_name()
         return os.path.join(dirName, fileName)
 
     # Uses the following criteria by ascending priority
     # 1. Storage dir with maximum free space
     # 2. Directory matching recording title (useful for series)
     # 3. Directory containing files matching the title
-    def __buildDir(self):
+    def _build_dir(self):
         db = MythDB()
         matchDirName = None
         title = "_".join(self.title.split())
@@ -113,7 +113,7 @@ class VideoFilePath:
             if sg.local and os.path.isdir(sg.dirname):
                 # get avaliable space of storage group partition
                 # and use storage group with max. available space
-                freeSpace = self.__getFreeSpace(sg.dirname)
+                freeSpace = self._get_free_space(sg.dirname)
                 logging.debug('Storage group {} -> space {}'.format(sg.dirname, freeSpace))
                 if freeSpace > maxFreeSpace:
                     maxFreeDirName = sg.dirname
@@ -121,11 +121,11 @@ class VideoFilePath:
                 for root, dirs, files in os.walk(sg.dirname, followlinks=True):
                     # first check subdir for match
                     for d in dirs:
-                        if self.__matchTitle(title, d):
+                        if self._match_title(title, d):
                             matchDirName = os.path.join(root, d)
                     # check file names for match
                     for f in files:
-                        if self.__matchTitle(title, f):
+                        if self._match_title(title, f):
                             logging.debug('Using storage dir with files matching title')
                             return root
         # return directory matching title if found
@@ -136,7 +136,7 @@ class VideoFilePath:
         logging.debug('Using storage dir with max. space')
         return maxFreeDirName
 
-    def __buildName(self):
+    def _build_name(self):
         # build output file name: "The_title(_-_|_SxxEyy_][The_Subtitle].m4v"
         parts = []
         if self.title and self.title != "":
@@ -149,12 +149,12 @@ class VideoFilePath:
             parts.append(self.subtitle)
         return "_".join(' '.join(parts).split()) + ".m4v"
 
-    def __getFreeSpace(self, filename):
+    def _get_free_space(self, filename):
         stats = os.statvfs(filename)
         return stats.f_bfree * stats.f_frsize
 
     # find storage directory by recording title
-    def __matchTitle(self, title, name):
+    def _match_title(self, title, name):
         t = title.lower()
         n = name.lower()
         for c in (' ', '_', '-'):
@@ -168,25 +168,25 @@ class Transcoder:
         self.status = Status()
         self.timer = None
 
-    def __abortTranscode(self, process):
-        self.status.setError('Aborting transcode due to timeout')
+    def _abort(self, process):
+        self.status.set_error('Aborting transcode due to timeout')
         process.kill()
 
     # start timer to abort transcode process if it hangs
-    def __startTimer(self, timeout, cp):
-        self.__stopTimer()
-        self.timer = Timer(timeout, self.__abortTranscode, [cp])
+    def _start_timer(self, timeout, cp):
+        self._stop_timer()
+        self.timer = Timer(timeout, self._abort, [cp])
         self.timer.start()
 
-    def __stopTimer(self):
+    def _stop_timer(self):
         if self.timer is not None:
             self.timer.cancel()
         self.timer = None
 
     def transcode(self, srcFile, dstFile, preset, timeout):
         # obtain cutlist
-        dt = self.status.getStartTime()
-        chanid = self.status.getChanId()
+        dt = self.status.get_start_time()
+        chanid = self.status.get_chan_id()
         if not dt or not chanid:
             logging.debug('Determine chanid and starttime from filename')
             # extract chanid and starttime from recording file name
@@ -212,10 +212,10 @@ class Transcoder:
 
         if len(cuts) == 0:
             # transcode whole file directly
-            res = self.__transcodePart(srcFile, dstFile, preset, timeout)
+            res = self._transcode_part(srcFile, dstFile, preset, timeout)
         if len(cuts) == 1:
             # transcode single part directly
-            res = self.__transcodePart(srcFile, dstFile, preset, timeout, cuts[0])
+            res = self._transcode_part(srcFile, dstFile, preset, timeout, cuts[0])
         else:
             # transcode each part on its own
             cutNumber = 1
@@ -224,7 +224,7 @@ class Transcoder:
             for cut in cuts:
                 partDstFile = '{}_part_{}{}'.format(dstFileBaseName, cutNumber, dstFileExt)
                 logging.info('Transcoding part {}/{} to {}'.format(cutNumber, len(cuts), partDstFile))
-                res = self.__transcodePart(srcFile, partDstFile, preset, timeout, cut)
+                res = self._transcode_part(srcFile, partDstFile, preset, timeout, cut)
                 if res != 0:
                     break
                 cutNumber += 1
@@ -239,7 +239,7 @@ class Transcoder:
                         textFile.write('file {}\n'.format(tmpFile))
 
                 tmpFiles.append(listFile)
-                self.status.setComment('Merging transcoded parts')
+                self.status.set_comment('Merging transcoded parts')
 
                 args = []
                 args.append('ffmpeg')
@@ -266,12 +266,12 @@ class Transcoder:
 
         if res == 0:
             # rescan videos
-            self.__addVideo(srcFile, dstFile)
-            self.__scanVideos()
+            self._add_video(srcFile, dstFile)
+            self._scan_videos()
 
         return res
 
-    def __transcodePart(self, srcFile, dstFile, preset, timeout, frames=None):
+    def _transcode_part(self, srcFile, dstFile, preset, timeout, frames=None):
         # start the transcoding process
         args = []
         args.append('HandBrakeCLI')
@@ -294,7 +294,7 @@ class Transcoder:
         cp = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         # start timer to abort transcode process if it hangs
-        self.__startTimer(timeout, cp)
+        self._start_timer(timeout, cp)
 
         line = ''
         lastProgress = 0
@@ -307,7 +307,7 @@ class Transcoder:
                 progress = '0'
                 eta = None
                 # new line, restart abort timer
-                self.__startTimer(timeout, cp)
+                self._start_timer(timeout, cp)
                 for token in line.split():
                     if token == '%':
                         progress = lastToken
@@ -317,17 +317,17 @@ class Transcoder:
                         break
                     lastToken = token
                 if eta and int(float(progress)) > lastProgress:
-                    self.status.setProgress(progress, eta)
+                    self.status.set_progress(progress, eta)
                     lastProgress = int(float(progress))
                     # check if job was stopped externally
-                    if self.status.getCmd() == Job.STOP:
+                    if self.status.get_cmd() == Job.STOP:
                         cp.kill()
                         break
                 line = ''
             else:
                 line += nl
         res = cp.wait()
-        self.__stopTimer()
+        self._stop_timer()
         # remove video file on failure
         if res != 0:
             # print transcoding error output
@@ -337,8 +337,8 @@ class Transcoder:
 
         return res
         
-    def __scanVideos(self):
-        self.status.setComment('Triggering video rescan')
+    def _scan_videos(self):
+        self.status.set_comment('Triggering video rescan')
 
         # scan videos
         args = []
@@ -348,8 +348,8 @@ class Transcoder:
         if cp.returncode != 0:
             logging.error(cp.stderr)
 
-    def __addVideo(self, recpath, vidpath):
-        self.status.setComment("Adding video and metadata to database")
+    def _add_video(self, recpath, vidpath):
+        self.status.set_comment("Adding video and metadata to database")
         try:
             mbe = api.Send(host='localhost')
 
@@ -398,7 +398,7 @@ class Transcoder:
                     director.append(member['Name'])
                 if member['Role'] == 'actor':
                     actors.append(member['Name'])
-            vid_length = self.__getVideoLength(vidpath)
+            vid_length = self._get_video_length(vidpath)
 
             # update video metadata
             data = {'Id': vid_id}
@@ -417,7 +417,7 @@ class Transcoder:
         except RuntimeError as error:
             logging.error('\nFatal error: "{}"'.format(error))
 
-    def __getVideoLength(self, filename):
+    def _get_video_length(self, filename):
         args = []
         args.append('ffprobe')
         args.append('-hide_banner')
@@ -437,7 +437,7 @@ class Transcoder:
         except ValueError:
             return 0
 
-def formatFileSize(num):
+def format_file_size(num):
     for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
         if abs(num) < 1000.0:
             return "%3.1f %s" % (num, unit)
@@ -473,14 +473,14 @@ def main():
     elif opts.recDir and opts.recFile:
         recPath = os.path.join(opts.recDir, opts.recFile)
     if not recPath:
-        status.setError('Recording path or recording directoy + recording file not specified')
+        status.set_error('Recording path or recording directoy + recording file not specified')
         sys.exit(1)
     if not os.path.isfile(recPath):
-        status.setError('Input recording file does not exist')
+        status.set_error('Input recording file does not exist')
         sys.exit(1)
 
     if opts.recTitle is None and opts.recSubtitle is None:
-        status.setError('Title and/or subtitle not specified')
+        status.set_error('Title and/or subtitle not specified')
         sys.exit(1)
 
     # build output file path
@@ -491,35 +491,35 @@ def main():
     pathBuilder.episode = opts.recEpisode
     vidPath = pathBuilder.build()
     if not vidPath:
-        status.setError('Could not find video storage directory')
+        status.set_error('Could not find video storage directory')
         sys.exit(2)
     if os.path.isfile(vidPath):
-        status.setError('Output video file already exists: \"{}\"'.format(vidPath))
+        status.set_error('Output video file already exists: \"{}\"'.format(vidPath))
         sys.exit(3)
 
-    status.setStatus(Job.RUNNING)
+    status.set_status(Job.RUNNING)
 
     # start transcoding
     logging.info('Started transcoding \"{}\"'.format(opts.recTitle))
     logging.info('Source recording file : {}'.format(recPath))
     logging.info('Destination video file: {}'.format(vidPath))
     res = Transcoder().transcode(recPath, vidPath, opts.preset, opts.timeout)
-    if status.getCmd() == Job.STOP:
-        status.setStatus(Job.CANCELLED)
-        status.setComment('Stopped transcoding')
-        status.showNotification('Stopped transcoding \"{}\"'.format(opts.recTitle), 'warning')
+    if status.get_cmd() == Job.STOP:
+        status.set_status(Job.CANCELLED)
+        status.set_comment('Stopped transcoding')
+        status.show_notification('Stopped transcoding \"{}\"'.format(opts.recTitle), 'warning')
         sys.exit(4)
     elif res != 0:
-        status.setError('Failed transcoding (error {})'.format(res))
-        status.showNotification('Failed transcoding \"{}\" (error {})'.format(opts.recTitle, res), 'error')
+        status.set_error('Failed transcoding (error {})'.format(res))
+        status.show_notification('Failed transcoding \"{}\" (error {})'.format(opts.recTitle, res), 'error')
         sys.exit(res)
 
     recSize = os.stat(recPath).st_size
     vidSize = os.stat(vidPath).st_size
-    sizeStatus = formatFileSize(recSize) + ' => ' + formatFileSize(vidSize)
-    status.showNotification('Finished transcoding \"{}\"'.format(opts.recTitle) + '\n' + sizeStatus, 'normal')
-    status.setComment('Finished transcoding\n' + sizeStatus)
-    status.setStatus(Job.FINISHED)
+    sizeStatus = format_file_size(recSize) + ' => ' + format_file_size(vidSize)
+    status.show_notification('Finished transcoding \"{}\"'.format(opts.recTitle) + '\n' + sizeStatus, 'normal')
+    status.set_comment('Finished transcoding\n' + sizeStatus)
+    status.set_status(Job.FINISHED)
 
     # .. the end
     sys.exit(0)
