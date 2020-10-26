@@ -18,6 +18,7 @@ sys.path.append("/usr/bin")
 
 
 class Status:
+    """ Manages status reporting """
     myth_job = None
     myth_job_id = 0
 
@@ -33,14 +34,13 @@ class Status:
         logging.error(msg)
         self.set_comment(msg)
         self.set_status(Job.ERRORED)
-        
 
     def set_comment(self, msg):
         """ Sets a comment text to the myth job object """
         logging.info(msg)
         if Status.myth_job:
             Status.myth_job.setComment(msg)
-    
+
     def set_progress(self, progress, eta):
         """ Sets progress as a comment to the myth job object """
         if Status.myth_job:
@@ -48,7 +48,7 @@ class Status:
 
     def set_status(self, new_status):
         """ Sets a state to the myth job object """
-        logging.debug(f'Setting job status to {new_status}')
+        logging.debug('Setting job status to %s', new_status)
         if Status.myth_job:
             Status.myth_job.setStatus(new_status)
 
@@ -71,7 +71,7 @@ class Status:
             return Status.myth_job.starttime
         return None
 
-    def show_notification(self, msg, type):
+    def show_notification(self, msg, msg_type):
         """ Displays a visual notification on active frontends """
         args = []
         args.append('mythutil')
@@ -83,18 +83,22 @@ class Status:
         args.append('--message_text')
         args.append(msg)
         args.append('--type')
-        args.append(type)
-        cp = subprocess.run(args, capture_output=True, text=True)
-        if cp.returncode != 0:
-            logging.error(cp.stderr)
-        if type == 'error':
+        args.append(msg_type)
+        try:
+            subprocess.run(args, capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as error:
+            logging.error(error.stderr)
+        if msg_type == 'error':
             logging.error(msg)
-        elif type == "warning":
+        elif msg_type == "warning":
             logging.warning(msg)
-        elif type == "normal":
+        elif msg_type == "normal":
             logging.info(msg)
 
 class VideoFilePath:
+    """ Build video file name from title, subtitle and season metadata
+        Also finds best matching storage group from different criteria.
+    """
     def __init__(self):
         self.title = None
         self.subtitle = None
@@ -117,31 +121,31 @@ class VideoFilePath:
             2. Directory matching recording title (useful for series)
             3. Directory containing files matching the title
         """
-        db = MythDB()
+        myth_db = MythDB()
         matched_dir_name = None
         title = "_".join(self.title.split())
         max_free_space = 0
         max_space_dir_name = None
-        for sg in db.getStorageGroup(groupname='Videos'):
+        for storage_group in myth_db.getStorageGroup(groupname='Videos'):
             # search given group
-            if sg.local and os.path.isdir(sg.dirname):
+            if storage_group.local and os.path.isdir(storage_group.dirname):
                 # get avaliable space of storage group partition
                 # and use storage group with max. available space
-                free_space = self._get_free_space(sg.dirname)
-                logging.debug(f'Storage group {sg.dirname} -> space {free_space}')
+                free_space = self._get_free_space(storage_group.dirname)
+                logging.debug('Storage group %s -> space %s', storage_group.dirname, free_space)
                 if free_space > max_free_space:
-                    max_space_dir_name = sg.dirname
+                    max_space_dir_name = storage_group.dirname
                     max_free_space = free_space
-                for root, dirs, files in os.walk(sg.dirname, followlinks=True):
+                for sg_root, sg_dirs, sg_files in os.walk(storage_group.dirname, followlinks=True):
                     # first check subdir for match
-                    for d in dirs:
-                        if self._match_title(title, d):
-                            matched_dir_name = os.path.join(root, d)
+                    for sg_dir in sg_dirs:
+                        if self._match_title(title, sg_dir):
+                            matched_dir_name = os.path.join(sg_root, sg_dir)
                     # check file names for match
-                    for f in files:
-                        if self._match_title(title, f):
+                    for sg_file in sg_files:
+                        if self._match_title(title, sg_file):
                             logging.debug('Using storage dir with files matching title')
-                            return root
+                            return sg_root
         # return directory matching title if found
         if matched_dir_name:
             logging.debug('Using storage dir matching title')
@@ -170,15 +174,16 @@ class VideoFilePath:
 
     def _match_title(self, title, name):
         """ Checks if file or directory name starts with specified title """
-        t = title.lower()
-        n = name.lower()
-        for c in (' ', '_', '-'):
-            n = n.replace(c, '')
-            t = t.replace(c, '')
-        return n.startswith(t)
+        simplified_title = title.lower()
+        simplified_name = name.lower()
+        for char in (' ', '_', '-'):
+            simplified_name = simplified_name.replace(char, '')
+            simplified_title = simplified_title.replace(char, '')
+        return simplified_name.startswith(simplified_title)
 
 
 class Transcoder:
+    """ Handles transcoding a recording to a video file """
     def __init__(self):
         self.status = Status()
         self.timer = None
@@ -188,10 +193,10 @@ class Transcoder:
         self.status.set_error('Aborting transcode due to timeout')
         process.kill()
 
-    def _start_timer(self, timeout, cp):
+    def _start_timer(self, timeout, process):
         """ Start timer to abort transcode process if it hangs """
         self._stop_timer()
-        self.timer = Timer(timeout, self._abort, [cp])
+        self.timer = Timer(timeout, self._abort, [process])
         self.timer.start()
 
     def _stop_timer(self):
@@ -220,24 +225,24 @@ class Transcoder:
 
         # convert starttime from UTC
         start_time = datetime.fromnaiveutc(start_time)
-        logging.debug(f'Using chanid={chan_id} and starttime={start_time}')
+        logging.debug('Using chanid=%s and starttime=%s', chan_id, start_time)
 
         # obtain cutlist
         try:
-            db = MythDB()
-            rec = Recorded((chan_id, start_time), db)
-            cuts = rec.markup.getuncutlist()
+            myth_db = MythDB()
+            myth_rec = Recorded((chan_id, start_time), myth_db)
+            cuts = myth_rec.markup.getuncutlist()
         except MythError as err:
-            logging.error(f'Could not read cutlist ({err.message})')
+            logging.error('Could not read cutlist (%s)', err.message)
             return 1
 
-        if len(cuts):
-            logging.debug(f'Found {len(cuts)} cuts: {cuts}')
+        if cuts:
+            logging.debug('Found %s cuts: %s', len(cuts), cuts)
 
-        if len(cuts) == 0:
+        if not cuts:
             # transcode whole file directly
             res = self._transcode_part(src_file, dst_file, preset, timeout)
-        if len(cuts) == 1:
+        elif len(cuts) == 1:
             # transcode single part directly
             res = self._transcode_part(src_file, dst_file, preset, timeout, cuts[0])
         else:
@@ -247,7 +252,7 @@ class Transcoder:
             dst_file_base_name,dst_file_ext = os.path.splitext(dst_file)
             for cut in cuts:
                 dst_file_part = f'{dst_file_base_name}_part_{cut_number}{dst_file_ext}'
-                logging.info(f'Transcoding part {cut_number}/{len(cuts)} to {dst_file_part}')
+                logging.info('Transcoding part %s/%s to %s', cut_number, len(cuts), dst_file_part)
                 res = self._transcode_part(src_file, dst_file_part, preset, timeout, cut)
                 if res != 0:
                     break
@@ -256,7 +261,7 @@ class Transcoder:
 
             # merge transcoded parts
             if len(cuts) == len(tmp_files):
-                logging.debug(f'Merging transcoded parts {tmp_files}')
+                logging.debug('Merging transcoded parts %s', tmp_files)
                 list_file = f'{dst_file_base_name}_partlist.txt'
                 with open(list_file, "w") as text_file:
                     for tmp_file in tmp_files:
@@ -276,11 +281,12 @@ class Transcoder:
                 args.append('-c')
                 args.append('copy')
                 args.append(dst_file)
-                logging.debug(f'Executing {args}')
-                cp = subprocess.run(args, capture_output=True, text=True)
-                res = cp.returncode
-                if res != 0:
-                    logging.error(cp.stderr)
+                logging.debug('Executing %s', args)
+                try:
+                    proc = subprocess.run(args, capture_output=True, text=True, check=True)
+                    res = proc.returncode
+                except subprocess.CalledProcessError as error:
+                    logging.error(error.stderr)
                     tmp_files.append(dst_file)
 
             # delete transcoded parts
@@ -311,7 +317,7 @@ class Transcoder:
         args.append('-o')
         args.append(dst_file)
         if not frames is None:
-            logging.debug(f'Transcoding from frame {frames[0]} to {frames[1]}')
+            logging.debug('Transcoding from frame %s to %s', frames[0], frames[1])
             # pass start and end position of remaining part to handbrake
             args.append('--start-at')
             args.append(f'frame:{frames[0]}')
@@ -319,24 +325,24 @@ class Transcoder:
             args.append('--stop-at')
             args.append(f'frame:{frames[1]-frames[0]}')
 
-        logging.debug(f'Executing {args}')
-        cp = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        logging.debug('Executing %s', args)
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         # start timer to abort transcode process if it hangs
-        self._start_timer(timeout, cp)
+        self._start_timer(timeout, proc)
 
         line = ''
         last_progress = 0
         while True:
-            nl = cp.stdout.read(1)
-            if nl == '' and cp.poll() is not None:
+            char = proc.stdout.read(1)
+            if char == '' and proc.poll() is not None:
                 break  # Aborted, no characters available, process died.
-            if nl == '\n':
+            if char == '\n':
                 last_token = ''
                 progress = '0'
                 eta = None
                 # new line, restart abort timer
-                self._start_timer(timeout, cp)
+                self._start_timer(timeout, proc)
                 for token in line.split():
                     if token == '%':
                         progress = last_token
@@ -350,22 +356,22 @@ class Transcoder:
                     last_progress = int(float(progress))
                     # check if job was stopped externally
                     if self.status.get_cmd() == Job.STOP:
-                        cp.kill()
+                        proc.kill()
                         break
                 line = ''
             else:
-                line += nl
-        res = cp.wait()
+                line += char
+        res = proc.wait()
         self._stop_timer()
         # remove video file on failure
         if res != 0:
             # print transcoding error output
-            logging.error(cp.stderr.read())
+            logging.error(proc.stderr.read())
             if os.path.isfile(dst_file):
                 os.remove(dst_file)
 
         return res
-        
+
     def _scan_videos(self):
         """ Triggers a video scan using mythutil """
         self.status.set_comment('Triggering video rescan')
@@ -374,9 +380,10 @@ class Transcoder:
         args = []
         args.append('mythutil')
         args.append('--scanvideos')
-        cp = subprocess.run(args, capture_output=True, text=True)
-        if cp.returncode != 0:
-            logging.error(cp.stderr)
+        try:
+            subprocess.run(args, capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as error:
+            logging.error(error.stderr)
 
     def _add_video(self, rec_path, vid_path):
         """ Adds the video to the database and copies recording metadata"""
@@ -384,18 +391,19 @@ class Transcoder:
         try:
             mbe = api.Send(host='localhost')
 
-            rd = mbe.send(endpoint='Myth/GetHostName')
-            host_name = rd['String']
+            result = mbe.send(endpoint='Myth/GetHostName')
+            host_name = result['String']
 
             # find storage group from video path
-            rd = mbe.send(endpoint='Myth/GetStorageGroupDirs', rest=f'HostName={host_name}&GroupName=Videos')
-            storage_groups = rd['StorageGroupDirList']['StorageGroupDirs']
+            result = mbe.send(endpoint='Myth/GetStorageGroupDirs',
+                          rest=f'HostName={host_name}&GroupName=Videos')
+            storage_groups = result['StorageGroupDirList']['StorageGroupDirs']
             vid_file = None
-            for sg in storage_groups:
-                sg_path = sg['DirName']
+            for sg_data in storage_groups:
+                sg_path = sg_data['DirName']
                 if vid_path.startswith(sg_path):
                     vid_file = vid_path[len(sg_path):]
-                    logging.debug(f'Found video in storage group {sg_path} -> {vid_file}')
+                    logging.debug('Found video in storage group %s -> %s', sg_path, vid_file)
                     break
 
             if not vid_file:
@@ -403,28 +411,31 @@ class Transcoder:
 
             # add video
             data = {'HostName': host_name, 'FileName': vid_file}
-            rd = mbe.send(endpoint='Video/AddVideo', postdata=data, opts={'debug': True, 'wrmi': True})
-            if rd['bool'] == 'true':
+            result = mbe.send(endpoint='Video/AddVideo', postdata=data,
+                          opts={'debug': True, 'wrmi': True})
+            if result['bool'] == 'true':
                 logging.info('Successfully added video')
 
             # get video id
-            rd = mbe.send(endpoint='Video/GetVideoByFileName', rest=f'FileName={urllib.parse.quote(vid_file)}')
-            vid_id = rd['VideoMetadataInfo']['Id']
-            logging.debug(f'Got video id {vid_id}')
+            result = mbe.send(endpoint='Video/GetVideoByFileName',
+                          rest=f'FileName={urllib.parse.quote(vid_file)}')
+            vid_id = result['VideoMetadataInfo']['Id']
+            logging.debug('Got video id %s', vid_id)
 
             # get recording id)
-            rd = mbe.send(endpoint='Dvr/RecordedIdForPathname', rest=f'Pathname={urllib.parse.quote(rec_path)}')
-            rec_id = rd['int'];
-            logging.debug(f'Got recording id {rec_id}')
+            result = mbe.send(endpoint='Dvr/RecordedIdForPathname',
+                          rest=f'Pathname={urllib.parse.quote(rec_path)}')
+            rec_id = result['int']
+            logging.debug('Got recording id %s', rec_id)
 
             # get recording metadata
-            rd = mbe.send(endpoint='Dvr/GetRecorded', rest=f'RecordedId={rec_id}')
+            result = mbe.send(endpoint='Dvr/GetRecorded', rest=f'RecordedId={rec_id}')
 
             # collect metadata
-            description = rd['Program']['Description']
+            description = result['Program']['Description']
             director = []
             actors = []
-            for member in rd['Program']['Cast']['CastMembers']:
+            for member in result['Program']['Cast']['CastMembers']:
                 if member['Role'] == 'director':
                     director.append(member['Name'])
                 if member['Role'] == 'actor':
@@ -437,16 +448,17 @@ class Transcoder:
                 data['Plot'] = description
             if vid_length >= 1:
                 data['Length'] = vid_length
-            if len(director):
+            if director:
                 data['Director'] = ', '.join(director)
-            if len(actors):
+            if actors:
                 data['Cast'] = ','.join(actors)
             if len(data) > 1:
-                rd = mbe.send(endpoint='Video/UpdateVideoMetadata', postdata=data, opts={'debug': True, 'wrmi': True})
-                if rd['bool'] == 'true':
+                result = mbe.send(endpoint='Video/UpdateVideoMetadata', postdata=data,
+                              opts={'debug': True, 'wrmi': True})
+                if result['bool'] == 'true':
                     logging.info('Successfully updated video metadata')
         except RuntimeError as error:
-            logging.error(f'\nFatal error: "{error}"')
+            logging.error('\nFatal error: "%s"', error)
 
     def _get_video_length(self, filename):
         """ Determines the video length using ffprobe """
@@ -460,12 +472,13 @@ class Transcoder:
         args.append('-of')
         args.append('default=noprint_wrappers=1:nokey=1')
         args.append(filename)
-        logging.debug(f'Executing {args}')
-        cp = subprocess.run(args, capture_output=True, text=True)
-        if cp.returncode != 0:
-            return 0
+        logging.debug('Executing %s', args)
         try:
-            return int(math.ceil(float(cp.stdout) / 60.0))
+            proc = subprocess.run(args, capture_output=True, text=True, check=True)
+            return int(math.ceil(float(proc.stdout) / 60.0))
+        except subprocess.CalledProcessError as error:
+            logging.error(error.stderr)
+            return 0
         except ValueError:
             return 0
 
@@ -479,24 +492,31 @@ def format_file_size(num):
 
 
 def main():
+    """ Main entry function """
     parser = argparse.ArgumentParser(description='Transcoding recording and move to videos')
     parser.add_argument('-f', '--file', dest='rec_file', help='recording file name')
     parser.add_argument('-d', '--dir', dest='rec_dir', help='recording directory name')
     parser.add_argument('-p', '--path', dest='rec_path', help='recording path name')
     parser.add_argument('-t', '--title', dest='rec_title', help='recording title')
     parser.add_argument('-s', '--subtitle', dest='rec_subtitle', help='recording subtitle')
-    parser.add_argument('-sn', '--season', dest='rec_season', default=0, type=int, help='recording season number')
-    parser.add_argument('-en', '--episode', dest='rec_episode', default=0, type=int, help='recording episode number')
+    parser.add_argument('-sn', '--season', dest='rec_season', default=0, type=int,
+                        help='recording season number')
+    parser.add_argument('-en', '--episode', dest='rec_episode', default=0, type=int,
+                        help='recording episode number')
     parser.add_argument('-j', '--jobid', dest='job_id', help='mythtv job id')
-    parser.add_argument('--preset', dest='preset', default='General/HQ 1080p30 Surround', help='Handbrake transcoding preset')
-    parser.add_argument('--timeout', dest='timeout', default=300, type=int, help='timeout in seconds to abort transcoding process')
-    parser.add_argument('-l', '--logfile', dest='log_file', default='', help='optional log file location')
+    parser.add_argument('--preset', dest='preset', default='General/HQ 1080p30 Surround',
+                        help='Handbrake transcoding preset')
+    parser.add_argument('--timeout', dest='timeout', default=300, type=int,
+                        help='timeout in seconds to abort transcoding process')
+    parser.add_argument('-l', '--logfile', dest='log_file', default='',
+                        help='optional log file location')
     opts = parser.parse_args()
 
     if opts.log_file:
-        logging.basicConfig(filename=opts.log_file, level=logging.DEBUG, format='%(asctime)s %(levelname)s: %(message)s')
+        logging.basicConfig(filename=opts.log_file, level=logging.DEBUG,
+                            format='%(asctime)s %(levelname)s: %(message)s')
 
-    logging.debug(f'Command line: {opts}')
+    logging.debug('Command line: %s', opts)
 
     status = Status(opts.job_id)
 
@@ -533,9 +553,9 @@ def main():
     status.set_status(Job.RUNNING)
 
     # start transcoding
-    logging.info(f'Started transcoding \"{opts.rec_title}\"')
-    logging.info(f'Source recording file : {rec_path}')
-    logging.info(f'Destination video file: {vid_path}')
+    logging.info('Started transcoding \"%s\"', opts.rec_title)
+    logging.info('Source recording file : %s', rec_path)
+    logging.info('Destination video file: %s', vid_path)
     res = Transcoder().transcode(rec_path, vid_path, opts.preset, opts.timeout)
     if status.get_cmd() == Job.STOP:
         status.set_status(Job.CANCELLED)
