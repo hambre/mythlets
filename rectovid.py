@@ -317,29 +317,28 @@ class Transcoder:
         last_progress = 0
         while True:
             char = proc.stdout.read(1)
-            if char == '' and proc.poll() is not None:
+            if char == '' and proc.poll():
                 break  # Aborted, no characters available, process died.
             if char == '\n':
                 last_token = ''
-                progress = '0'
+                progress = None
                 eta = None
                 # new line, restart abort timer
                 self._start_timer(proc)
                 for token in line.split():
                     if token == '%':
-                        progress = last_token
+                        progress = int(float(last_token))
                     if last_token == 'ETA':
                         eta = token.replace(')', '')
-                    if eta and progress:
+                    if eta and progress and progress > last_progress:
+                        self.status.set_progress(progress, eta)
+                        last_progress = progress
                         break
                     last_token = token
-                if eta and int(float(progress)) > last_progress:
-                    self.status.set_progress(progress, eta)
-                    last_progress = int(float(progress))
-                    # check if job was stopped externally
-                    if self.status.get_cmd() == Job.STOP:
-                        proc.kill()
-                        break
+                # check if job was stopped externally
+                if self.status.get_cmd() == Job.STOP:
+                    proc.kill()
+                    break
                 line = ''
             else:
                 line += char
@@ -464,7 +463,7 @@ class Transcoder:
             if director:
                 data['Director'] = ', '.join(director)
             if actors:
-                data['Cast'] = ','.join(actors)
+                data['Cast'] = ', '.join(actors)
             if len(data) > 1:
                 result = mbe.send(endpoint='Video/UpdateVideoMetadata', postdata=data,
                               opts={'debug': True, 'wrmi': True})
