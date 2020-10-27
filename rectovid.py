@@ -252,11 +252,6 @@ class Transcoder:
             # transcode each part on its own
             res = self._transcode_multiple(cuts)
 
-        if res == 0:
-            # rescan videos
-            self._add_video(self.src_file, self.dst_file)
-            self._scan_videos()
-
         return res
 
     def _transcode_multiple(self, cuts):
@@ -384,90 +379,6 @@ class Transcoder:
 
         return proc.returncode
 
-    def _scan_videos(self):
-        """ Triggers a video scan using mythutil """
-        self.status.set_comment('Triggering video rescan')
-
-        # scan videos
-        args = []
-        args.append('mythutil')
-        args.append('--scanvideos')
-        try:
-            subprocess.run(args, capture_output=True, text=True, check=True)
-        except subprocess.CalledProcessError as error:
-            logging.error(error.stderr)
-
-    def _add_video(self, rec_path, vid_path):
-        """ Adds the video to the database and copies recording metadata """
-        mbe = Backend()
-
-        # find video path relative to storage dir
-        vid_file = None
-        for sg_path in mbe.get_storage_dirs('Videos'):
-            if vid_path.startswith(sg_path):
-                vid_file = vid_path[len(sg_path):]
-                logging.debug('Found video in storage group %s -> %s', sg_path, vid_file)
-                break
-
-        # add video to database
-        if mbe.add_video(vid_file):
-            logging.info('Successfully added video')
-        else:
-            return
-
-        vid_id = mbe.get_video_id(vid_file)
-        logging.debug('Got video id %s', vid_id)
-        rec_id = mbe.get_recording_id(rec_path)
-        logging.debug('Got recording id %s', rec_id)
-
-        rec_data = mbe.get_recording_metadata(rec_id)
-
-        # collect metadata
-        description = rec_data['Program']['Description']
-        director = []
-        actors = []
-        for member in rec_data['Program']['Cast']['CastMembers']:
-            if member['Role'] == 'director':
-                director.append(member['Name'])
-            if member['Role'] == 'actor':
-                actors.append(member['Name'])
-        vid_length = self._get_video_length(vid_path)
-
-        # update video metadata
-        data = {}
-        if description:
-            data['Plot'] = description
-        if vid_length >= 1:
-            data['Length'] = vid_length
-        if director:
-            data['Director'] = ', '.join(director)
-        if actors:
-            data['Cast'] = ', '.join(actors)
-        if mbe.update_video_metadata(vid_id, data):
-            logging.info('Successfully updated video metadata')
-
-
-    def _get_video_length(self, filename):
-        """ Determines the video length using ffprobe """
-        args = []
-        args.append('ffprobe')
-        args.append('-hide_banner')
-        args.append('-v')
-        args.append('error')
-        args.append('-show_entries')
-        args.append('format=duration')
-        args.append('-of')
-        args.append('default=noprint_wrappers=1:nokey=1')
-        args.append(filename)
-        logging.debug('Executing %s', args)
-        try:
-            proc = subprocess.run(args, capture_output=True, text=True, check=True)
-            return int(math.ceil(float(proc.stdout) / 60.0))
-        except subprocess.CalledProcessError as error:
-            logging.error(error.stderr)
-            return 0
-        except ValueError:
-            return 0
 
 class Backend:
     """ Handles sending and receiving data to/from the Mythtv backend """
@@ -581,13 +492,105 @@ class Backend:
             logging.error('\nFatal error: "%s"', error)
         return False
 
-def format_file_size(num):
-    """ Formats the given number as a file size """
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-        if abs(num) < 1000.0:
-            return "%3.1f %s" % (num, unit)
-        num /= 1000.0
-    return "%.1f %s" % (num, 'PB')
+class Util:
+    """ Utility class """
+    @staticmethod
+    def format_file_size(num):
+        """ Formats the given number as a file size """
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if abs(num) < 1000.0:
+                return "%3.1f %s" % (num, unit)
+            num /= 1000.0
+        return "%.1f %s" % (num, 'PB')
+
+    @staticmethod
+    def get_video_length(filename):
+        """ Determines the video length using ffprobe
+            Returns the video length in minutes.
+        """
+        args = []
+        args.append('ffprobe')
+        args.append('-hide_banner')
+        args.append('-v')
+        args.append('error')
+        args.append('-show_entries')
+        args.append('format=duration')
+        args.append('-of')
+        args.append('default=noprint_wrappers=1:nokey=1')
+        args.append(filename)
+        logging.debug('Executing %s', args)
+        try:
+            proc = subprocess.run(args, capture_output=True, text=True, check=True)
+            return int(math.ceil(float(proc.stdout) / 60.0))
+        except subprocess.CalledProcessError as error:
+            logging.error(error.stderr)
+            return 0
+        except ValueError:
+            return 0
+
+    @staticmethod
+    def add_video(rec_path, vid_path):
+        """ Adds the video to the database and copies recording metadata """
+        Status().set_comment('Adding video to database')
+
+        mbe = Backend()
+
+        # find video path relative to storage dir
+        vid_file = None
+        for sg_path in mbe.get_storage_dirs('Videos'):
+            if vid_path.startswith(sg_path):
+                vid_file = vid_path[len(sg_path):]
+                logging.debug('Found video in storage group %s -> %s', sg_path, vid_file)
+                break
+
+        # add video to database
+        if mbe.add_video(vid_file):
+            logging.info('Successfully added video')
+        else:
+            return
+
+        vid_id = mbe.get_video_id(vid_file)
+        logging.debug('Got video id %s', vid_id)
+        rec_id = mbe.get_recording_id(rec_path)
+        logging.debug('Got recording id %s', rec_id)
+
+        rec_data = mbe.get_recording_metadata(rec_id)
+
+        # collect metadata
+        description = rec_data['Program']['Description']
+        director = []
+        actors = []
+        for member in rec_data['Program']['Cast']['CastMembers']:
+            if member['Role'] == 'director':
+                director.append(member['Name'])
+            if member['Role'] == 'actor':
+                actors.append(member['Name'])
+        vid_length = Util.get_video_length(vid_path)
+
+        # update video metadata
+        data = {}
+        if description:
+            data['Plot'] = description
+        if vid_length >= 1:
+            data['Length'] = vid_length
+        if director:
+            data['Director'] = ', '.join(director)
+        if actors:
+            data['Cast'] = ', '.join(actors)
+        if mbe.update_video_metadata(vid_id, data):
+            logging.info('Successfully updated video metadata')
+
+    @staticmethod
+    def scan_videos():
+        """ Triggers a video scan using mythutil """
+        Status().set_comment('Triggering video rescan')
+        args = []
+        args.append('mythutil')
+        args.append('--scanvideos')
+        try:
+            subprocess.run(args, capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as error:
+            logging.error(error.stderr)
 
 def parse_arguments():
     """ Parses command line arguments """
@@ -609,17 +612,19 @@ def parse_arguments():
     parser.add_argument('-l', '--logfile', dest='log_file', default='',
                         help='optional log file location')
 
-    return parser.parse_args()
+    args = parser.parse_args()
+
+    if args.log_file:
+        logging.basicConfig(filename=args.log_file, level=logging.DEBUG,
+                            format='%(asctime)s %(levelname)s: %(message)s')
+
+    logging.debug('Command line: %s', args)
+
+    return args
 
 def main():
     """ Main entry function """
     opts = parse_arguments()
-
-    if opts.log_file:
-        logging.basicConfig(filename=opts.log_file, level=logging.DEBUG,
-                            format='%(asctime)s %(levelname)s: %(message)s')
-
-    logging.debug('Command line: %s', opts)
 
     status = Status(opts.job_id)
 
@@ -662,13 +667,16 @@ def main():
         status.set_comment('Stopped transcoding')
         status.show_notification(f'Stopped transcoding \"{opts.rec_title}\"', 'warning')
         sys.exit(4)
+    elif res == 0:
+        Util.add_video(rec_path, vid_path)
+        Util.scan_videos()
     elif res != 0:
         status.set_error(f'Failed transcoding (error {res})')
         status.show_notification(f'Failed transcoding \"{opts.rec_title}\" (error {res})', 'error')
         sys.exit(res)
 
-    rec_size = format_file_size(os.stat(rec_path).st_size)
-    vid_size = format_file_size(os.stat(vid_path).st_size)
+    rec_size = Util.format_file_size(os.stat(rec_path).st_size)
+    vid_size = Util.format_file_size(os.stat(vid_path).st_size)
     size_status = f'{rec_size} => {vid_size}'
     status.show_notification(f'Finished transcoding "{opts.rec_title}"\n{size_status}', 'normal')
     status.set_comment(f'Finished transcoding\n{size_status}')
