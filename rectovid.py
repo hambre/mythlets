@@ -99,11 +99,11 @@ class VideoFilePath:
     """ Build video file name from title, subtitle and season metadata
         Also finds best matching storage group from different criteria.
     """
-    def __init__(self):
-        self.title = None
-        self.subtitle = None
-        self.season = 0
-        self.episode = 0
+    def __init__(self, title, subtitle = None, season = 0, episode = 0):
+        self.title = title
+        self.subtitle = subtitle
+        self.season = season
+        self.episode = episode
 
     def build(self):
         """ Builds the video file path """
@@ -184,19 +184,23 @@ class VideoFilePath:
 
 class Transcoder:
     """ Handles transcoding a recording to a video file """
-    def __init__(self):
+    def __init__(self, src_file, dst_file, preset, timeout):
         self.status = Status()
         self.timer = None
+        self.src_file = src_file
+        self.dst_file = dst_file
+        self.preset = preset
+        self.timeout = timeout
 
     def _abort(self, process):
         """ Abort transcoding after timeout """
         self.status.set_error('Aborting transcode due to timeout')
         process.kill()
 
-    def _start_timer(self, timeout, process):
+    def _start_timer(self, process):
         """ Start timer to abort transcode process if it hangs """
         self._stop_timer()
-        self.timer = Timer(timeout, self._abort, [process])
+        self.timer = Timer(self.timeout, self._abort, [process])
         self.timer.start()
 
     def _stop_timer(self):
@@ -205,7 +209,7 @@ class Transcoder:
             self.timer.cancel()
         self.timer = None
 
-    def transcode(self, src_file, dst_file, preset, timeout):
+    def transcode(self):
         """ Transcode the source file to the destination file using the specified preset
             The cutlist of the recording (source file) is used to transcode
             multiple parts of the recording if neccessary and then merged into the final
@@ -219,7 +223,7 @@ class Transcoder:
         if not start_time or not chan_id:
             logging.debug('Determine chanid and starttime from filename')
             # extract chanid and starttime from recording file name
-            src_file_base_name,src_file_ext = os.path.splitext(os.path.basename(src_file))
+            src_file_base_name = os.path.splitext(os.path.basename(self.src_file))[0]
             (chan_id, start_time) = src_file_base_name.split('_', 2)
             start_time = datetime.duck(start_time)
 
@@ -229,8 +233,7 @@ class Transcoder:
 
         # obtain cutlist
         try:
-            myth_db = MythDB()
-            myth_rec = Recorded((chan_id, start_time), myth_db)
+            myth_rec = Recorded((chan_id, start_time), MythDB())
             cuts = myth_rec.markup.getuncutlist()
         except MythError as err:
             logging.error('Could not read cutlist (%s)', err.message)
@@ -241,67 +244,46 @@ class Transcoder:
 
         if not cuts:
             # transcode whole file directly
-            res = self._transcode_part(src_file, dst_file, preset, timeout)
+            res = self._transcode_single()
         elif len(cuts) == 1:
             # transcode single part directly
-            res = self._transcode_part(src_file, dst_file, preset, timeout, cuts[0])
+            res = self._transcode_single(cuts[0])
         else:
             # transcode each part on its own
-            cut_number = 1
-            tmp_files = []
-            dst_file_base_name,dst_file_ext = os.path.splitext(dst_file)
-            for cut in cuts:
-                dst_file_part = f'{dst_file_base_name}_part_{cut_number}{dst_file_ext}'
-                logging.info('Transcoding part %s/%s to %s', cut_number, len(cuts), dst_file_part)
-                res = self._transcode_part(src_file, dst_file_part, preset, timeout, cut)
-                if res != 0:
-                    break
-                cut_number += 1
-                tmp_files.append(dst_file_part)
-
-            # merge transcoded parts
-            if len(cuts) == len(tmp_files):
-                logging.debug('Merging transcoded parts %s', tmp_files)
-                list_file = f'{dst_file_base_name}_partlist.txt'
-                with open(list_file, "w") as text_file:
-                    for tmp_file in tmp_files:
-                        text_file.write(f'file {tmp_file}\n')
-
-                tmp_files.append(list_file)
-                self.status.set_comment('Merging transcoded parts')
-
-                args = []
-                args.append('ffmpeg')
-                args.append('-f')
-                args.append('concat')
-                args.append('-safe')
-                args.append('0')
-                args.append('-i')
-                args.append(list_file)
-                args.append('-c')
-                args.append('copy')
-                args.append(dst_file)
-                logging.debug('Executing %s', args)
-                try:
-                    proc = subprocess.run(args, capture_output=True, text=True, check=True)
-                    res = proc.returncode
-                except subprocess.CalledProcessError as error:
-                    logging.error(error.stderr)
-                    tmp_files.append(dst_file)
-
-            # delete transcoded parts
-            for tmp_file in tmp_files:
-                if os.path.isfile(tmp_file):
-                    os.remove(tmp_file)
+            res = self._transcode_multiple(cuts)
 
         if res == 0:
             # rescan videos
-            self._add_video(src_file, dst_file)
+            self._add_video(self.src_file, self.dst_file)
             self._scan_videos()
 
         return res
 
-    def _transcode_part(self, src_file, dst_file, preset, timeout, frames=None):
+    def _transcode_multiple(self, cuts):
+        # transcode each part on its own
+        cut_number = 1
+        tmp_files = []
+        dst_file_base_name,dst_file_ext = os.path.splitext(self.dst_file)
+        for cut in cuts:
+            dst_file_part = f'{dst_file_base_name}_part_{cut_number}{dst_file_ext}'
+            logging.info('Transcoding part %s/%s to %s', cut_number, len(cuts), dst_file_part)
+            res = self._transcode_single(cut)
+            if res != 0:
+                break
+            cut_number += 1
+            tmp_files.append(dst_file_part)
+
+        # merge transcoded parts
+        if len(cuts) == len(tmp_files):
+            res = self._merge_parts(tmp_files, self.dst_file)
+
+        # delete transcoded parts
+        for tmp_file in tmp_files:
+            if os.path.isfile(tmp_file):
+                os.remove(tmp_file)
+        return res
+
+    def _transcode_single(self, frames=None):
         """ Start HandBrake to transcodes all or a single part (identified by
             start and end frame) of the source file
             A timer is used to abort the transcoding if there was no progress
@@ -311,12 +293,12 @@ class Transcoder:
         args = []
         args.append('HandBrakeCLI')
         args.append('--preset')
-        args.append(preset)
+        args.append(self.preset)
         args.append('-i')
-        args.append(src_file)
+        args.append(self.src_file)
         args.append('-o')
-        args.append(dst_file)
-        if not frames is None:
+        args.append(self.dst_file)
+        if frames:
             logging.debug('Transcoding from frame %s to %s', frames[0], frames[1])
             # pass start and end position of remaining part to handbrake
             args.append('--start-at')
@@ -329,7 +311,7 @@ class Transcoder:
         proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         # start timer to abort transcode process if it hangs
-        self._start_timer(timeout, proc)
+        self._start_timer(proc)
 
         line = ''
         last_progress = 0
@@ -342,7 +324,7 @@ class Transcoder:
                 progress = '0'
                 eta = None
                 # new line, restart abort timer
-                self._start_timer(timeout, proc)
+                self._start_timer(proc)
                 for token in line.split():
                     if token == '%':
                         progress = last_token
@@ -367,10 +349,41 @@ class Transcoder:
         if res != 0:
             # print transcoding error output
             logging.error(proc.stderr.read())
-            if os.path.isfile(dst_file):
-                os.remove(dst_file)
+            if os.path.isfile(self.dst_file):
+                os.remove(self.dst_file)
 
         return res
+
+    def _merge_parts(self, parts, dst_file):
+        logging.debug('Merging transcoded parts %s', parts)
+        list_file = f'{os.path.splitext(dst_file)[0]}_partlist.txt'
+        with open(list_file, "w") as text_file:
+            for part in parts:
+                text_file.write(f'file {part}\n')
+
+        self.status.set_comment('Merging transcoded parts')
+
+        args = []
+        args.append('ffmpeg')
+        args.append('-f')
+        args.append('concat')
+        args.append('-safe')
+        args.append('0')
+        args.append('-i')
+        args.append(list_file)
+        args.append('-c')
+        args.append('copy')
+        args.append(dst_file)
+        logging.debug('Executing %s', args)
+        try:
+            proc = subprocess.run(args, capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as error:
+            logging.error(error.stderr)
+            os.remove(dst_file)
+        finally:
+            os.remove(list_file)
+
+        return proc.returncode
 
     def _scan_videos(self):
         """ Triggers a video scan using mythutil """
@@ -490,10 +503,9 @@ def format_file_size(num):
         num /= 1000.0
     return "%.1f %s" % (num, 'PB')
 
-
-def main():
-    """ Main entry function """
-    parser = argparse.ArgumentParser(description='Transcoding recording and move to videos')
+def parse_arguments():
+    """ Parses command line arguments """
+    parser = argparse.ArgumentParser(description='Transcode recording and move it to video storage')
     parser.add_argument('-f', '--file', dest='rec_file', help='recording file name')
     parser.add_argument('-d', '--dir', dest='rec_dir', help='recording directory name')
     parser.add_argument('-p', '--path', dest='rec_path', help='recording path name')
@@ -510,7 +522,12 @@ def main():
                         help='timeout in seconds to abort transcoding process')
     parser.add_argument('-l', '--logfile', dest='log_file', default='',
                         help='optional log file location')
-    opts = parser.parse_args()
+
+    return parser.parse_args()
+
+def main():
+    """ Main entry function """
+    opts = parse_arguments()
 
     if opts.log_file:
         logging.basicConfig(filename=opts.log_file, level=logging.DEBUG,
@@ -537,11 +554,8 @@ def main():
         sys.exit(1)
 
     # build output file path
-    path_builder = VideoFilePath()
-    path_builder.title = opts.rec_title
-    path_builder.subtitle = opts.rec_subtitle
-    path_builder.season = opts.rec_season
-    path_builder.episode = opts.rec_episode
+    path_builder = VideoFilePath(opts.rec_title, opts.rec_subtitle,
+                                 opts.rec_season, opts.rec_episode)
     vid_path = path_builder.build()
     if not vid_path:
         status.set_error('Could not find video storage directory')
@@ -556,7 +570,7 @@ def main():
     logging.info('Started transcoding \"%s\"', opts.rec_title)
     logging.info('Source recording file : %s', rec_path)
     logging.info('Destination video file: %s', vid_path)
-    res = Transcoder().transcode(rec_path, vid_path, opts.preset, opts.timeout)
+    res = Transcoder(rec_path, vid_path, opts.preset, opts.timeout).transcode()
     if status.get_cmd() == Job.STOP:
         status.set_status(Job.CANCELLED)
         status.set_comment('Stopped transcoding')
@@ -567,9 +581,9 @@ def main():
         status.show_notification(f'Failed transcoding \"{opts.rec_title}\" (error {res})', 'error')
         sys.exit(res)
 
-    rec_size = os.stat(rec_path).st_size
-    vid_size = os.stat(vid_path).st_size
-    size_status = f'{format_file_size(rec_size)} => {format_file_size(vid_size)}'
+    rec_size = format_file_size(os.stat(rec_path).st_size)
+    vid_size = format_file_size(os.stat(vid_path).st_size)
+    size_status = f'{rec_size} => {vid_size}'
     status.show_notification(f'Finished transcoding "{opts.rec_title}"\n{size_status}', 'normal')
     status.set_comment(f'Finished transcoding\n{size_status}')
     status.set_status(Job.FINISHED)
