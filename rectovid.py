@@ -398,79 +398,54 @@ class Transcoder:
             logging.error(error.stderr)
 
     def _add_video(self, rec_path, vid_path):
-        """ Adds the video to the database and copies recording metadata"""
-        self.status.set_comment("Adding video and metadata to database")
-        try:
-            mbe = api.Send(host='localhost')
+        """ Adds the video to the database and copies recording metadata """
+        mbe = Backend()
 
-            result = mbe.send(endpoint='Myth/GetHostName')
-            host_name = result['String']
+        # find video path relative to storage dir
+        vid_file = None
+        for sg_path in mbe.get_storage_dirs('Videos'):
+            if vid_path.startswith(sg_path):
+                vid_file = vid_path[len(sg_path):]
+                logging.debug('Found video in storage group %s -> %s', sg_path, vid_file)
+                break
 
-            # find storage group from video path
-            result = mbe.send(endpoint='Myth/GetStorageGroupDirs',
-                          rest=f'HostName={host_name}&GroupName=Videos')
-            storage_groups = result['StorageGroupDirList']['StorageGroupDirs']
-            vid_file = None
-            for sg_data in storage_groups:
-                sg_path = sg_data['DirName']
-                if vid_path.startswith(sg_path):
-                    vid_file = vid_path[len(sg_path):]
-                    logging.debug('Found video in storage group %s -> %s', sg_path, vid_file)
-                    break
+        # add video to database
+        if mbe.add_video(vid_file):
+            logging.info('Successfully added video')
+        else:
+            return
 
-            if not vid_file:
-                return
+        vid_id = mbe.get_video_id(vid_file)
+        logging.debug('Got video id %s', vid_id)
+        rec_id = mbe.get_recording_id(rec_path)
+        logging.debug('Got recording id %s', rec_id)
 
-            # add video
-            data = {'HostName': host_name, 'FileName': vid_file}
-            result = mbe.send(endpoint='Video/AddVideo', postdata=data,
-                          opts={'debug': True, 'wrmi': True})
-            if result['bool'] == 'true':
-                logging.info('Successfully added video')
+        rec_data = mbe.get_recording_metadata(rec_id)
 
-            # get video id
-            result = mbe.send(endpoint='Video/GetVideoByFileName',
-                          rest=f'FileName={urllib.parse.quote(vid_file)}')
-            vid_id = result['VideoMetadataInfo']['Id']
-            logging.debug('Got video id %s', vid_id)
+        # collect metadata
+        description = rec_data['Program']['Description']
+        director = []
+        actors = []
+        for member in rec_data['Program']['Cast']['CastMembers']:
+            if member['Role'] == 'director':
+                director.append(member['Name'])
+            if member['Role'] == 'actor':
+                actors.append(member['Name'])
+        vid_length = self._get_video_length(vid_path)
 
-            # get recording id)
-            result = mbe.send(endpoint='Dvr/RecordedIdForPathname',
-                          rest=f'Pathname={urllib.parse.quote(rec_path)}')
-            rec_id = result['int']
-            logging.debug('Got recording id %s', rec_id)
+        # update video metadata
+        data = {}
+        if description:
+            data['Plot'] = description
+        if vid_length >= 1:
+            data['Length'] = vid_length
+        if director:
+            data['Director'] = ', '.join(director)
+        if actors:
+            data['Cast'] = ', '.join(actors)
+        if mbe.update_video_metadata(vid_id, data):
+            logging.info('Successfully updated video metadata')
 
-            # get recording metadata
-            result = mbe.send(endpoint='Dvr/GetRecorded', rest=f'RecordedId={rec_id}')
-
-            # collect metadata
-            description = result['Program']['Description']
-            director = []
-            actors = []
-            for member in result['Program']['Cast']['CastMembers']:
-                if member['Role'] == 'director':
-                    director.append(member['Name'])
-                if member['Role'] == 'actor':
-                    actors.append(member['Name'])
-            vid_length = self._get_video_length(vid_path)
-
-            # update video metadata
-            data = {'Id': vid_id}
-            if description:
-                data['Plot'] = description
-            if vid_length >= 1:
-                data['Length'] = vid_length
-            if director:
-                data['Director'] = ', '.join(director)
-            if actors:
-                data['Cast'] = ', '.join(actors)
-            if len(data) > 1:
-                result = mbe.send(endpoint='Video/UpdateVideoMetadata', postdata=data,
-                              opts={'debug': True, 'wrmi': True})
-                if result['bool'] == 'true':
-                    logging.info('Successfully updated video metadata')
-        except RuntimeError as error:
-            logging.error('\nFatal error: "%s"', error)
 
     def _get_video_length(self, filename):
         """ Determines the video length using ffprobe """
@@ -493,6 +468,118 @@ class Transcoder:
             return 0
         except ValueError:
             return 0
+
+class Backend:
+    """ Handles sending and receiving data to/from the Mythtv backend """
+    def __init__(self):
+        try:
+            self.mbe = api.Send(host='localhost')
+            result = self.mbe.send(
+                endpoint='Myth/GetHostName'
+            )
+            self.host_name = result['String']
+        except RuntimeError as error:
+            logging.error('\nFatal error: "%s"', error)
+        self.post_opts = {'wrmi': True}
+        if logging.getLogger().getEffectiveLevel() == logging.DEBUG:
+            self.post_opts['debug'] = True
+
+    def get_storage_group_data(self, group_name=None):
+        """ Retrieve storage group data from backend """
+        if group_name:
+            data =f'HostName={self.host_name}&GroupName={group_name}'
+        else:
+            data =f'HostName={self.host_name}'
+        try:
+            result = self.mbe.send(
+                endpoint='Myth/GetStorageGroupDirs', rest=data
+            )
+            return result
+        except RuntimeError as error:
+            logging.error('\nFatal error: "%s"', error)
+            return None
+
+    def get_storage_dirs(self, group_name=None):
+        """ Returns list of storage group directories """
+        data = self.get_storage_group_data(group_name)
+        if not data:
+            return []
+        storage_groups = data['StorageGroupDirList']['StorageGroupDirs']
+        dirs = []
+        for sg_data in storage_groups:
+            dirs.append(sg_data['DirName'])
+        return dirs
+
+    def add_video(self, vid_path):
+        """ Adds specified video to the database
+            The path must be an absolute path.
+        """
+        if not vid_path:
+            return False
+        try:
+            data = {'HostName': self.host_name, 'FileName': vid_path}
+            result = self.mbe.send(
+                endpoint='Video/AddVideo', postdata=data, opts=self.post_opts
+            )
+            if result['bool'] == 'true':
+                return True
+        except RuntimeError as error:
+            logging.error('\nFatal error: "%s"', error)
+        return False
+
+    def get_video_id(self, vid_file):
+        """ Retrieves the video id of the specified video file
+            The video file must be relative to one of the video
+            storage dirs.
+        """
+        try:
+            data = f'FileName={urllib.parse.quote(vid_file)}'
+            result = self.mbe.send(
+                endpoint='Video/GetVideoByFileName', rest=data
+            )
+            return result['VideoMetadataInfo']['Id']
+        except RuntimeError as error:
+            logging.error('\nFatal error: "%s"', error)
+        return None
+
+    def get_recording_id(self, rec_path):
+        """ Retrieves recording id of specified recording file """
+        try:
+            data = f'Pathname={urllib.parse.quote(rec_path)}'
+            result = self.mbe.send(
+                endpoint='Dvr/RecordedIdForPathname', rest=data
+            )
+            return result['int']
+        except RuntimeError as error:
+            logging.error('\nFatal error: "%s"', error)
+        return None
+
+    def get_recording_metadata(self, rec_id):
+        """ Retrieves metadata of the specified recording """
+        try:
+            data = f'RecordedId={rec_id}'
+            result = self.mbe.send(
+                endpoint='Dvr/GetRecorded', rest=data
+            )
+            return result
+        except RuntimeError as error:
+            logging.error('\nFatal error: "%s"', error)
+        return None
+
+    def update_video_metadata(self, vid_id, data):
+        """ Updates metadata of the specified video """
+        try:
+            if not data:
+                return False
+            data['Id'] = vid_id
+            result = self.mbe.send(
+                endpoint='Video/UpdateVideoMetadata', postdata=data, opts=self.post_opts
+            )
+            if result['bool'] == 'true':
+                return True
+        except RuntimeError as error:
+            logging.error('\nFatal error: "%s"', error)
+        return False
 
 def format_file_size(num):
     """ Formats the given number as a file size """
