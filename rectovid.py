@@ -29,71 +29,55 @@ class Status:
             Status.myth_job.update(status=Job.STARTING)
             self.set_comment('Starting job...')
 
-    def set_error(self, msg):
+    @staticmethod
+    def set_error(msg):
         """ Set an error state to the myth job object """
         logging.error(msg)
-        self.set_comment(msg)
-        self.set_status(Job.ERRORED)
+        Status.set_comment(msg)
+        Status.set_status(Job.ERRORED)
 
-    def set_comment(self, msg):
+    @staticmethod
+    def set_comment(msg):
         """ Sets a comment text to the myth job object """
         logging.info(msg)
         if Status.myth_job:
             Status.myth_job.setComment(msg)
 
-    def set_progress(self, progress, eta):
+    @staticmethod
+    def set_progress(progress, eta):
         """ Sets progress as a comment to the myth job object """
         if Status.myth_job:
             Status.myth_job.setComment(f'Progress: {progress} %\nRemaining time: {eta}')
 
-    def set_status(self, new_status):
+    @staticmethod
+    def set_status(new_status):
         """ Sets a state to the myth job object """
         logging.debug('Setting job status to %s', new_status)
         if Status.myth_job:
             Status.myth_job.setStatus(new_status)
 
-    def get_cmd(self):
+    @staticmethod
+    def get_cmd():
         """ Reads the current myth job state from the database """
         if Status.myth_job_id == 0:
             return Job.UNKNOWN
         # create new job object to pull current state from database
         return Job(Status.myth_job_id).cmds
 
-    def get_chan_id(self):
+    @staticmethod
+    def get_chan_id():
         """ Reads the chanid from the myth job object """
         if Status.myth_job:
             return Status.myth_job.chanid
         return None
 
-    def get_start_time(self):
+    @staticmethod
+    def get_start_time():
         """ Reads the starttime from the myth job object """
         if Status.myth_job:
             return Status.myth_job.starttime
         return None
 
-    def show_notification(self, msg, msg_type):
-        """ Displays a visual notification on active frontends """
-        args = []
-        args.append('mythutil')
-        args.append('--notification')
-        args.append('--origin')
-        args.append('\"' + __file__ + '\"')
-        args.append('--timeout')
-        args.append('60')
-        args.append('--message_text')
-        args.append(msg)
-        args.append('--type')
-        args.append(msg_type)
-        try:
-            subprocess.run(args, capture_output=True, text=True, check=True)
-        except subprocess.CalledProcessError as error:
-            logging.error(error.stderr)
-        if msg_type == 'error':
-            logging.error(msg)
-        elif msg_type == "warning":
-            logging.warning(msg)
-        elif msg_type == "normal":
-            logging.info(msg)
 
 class VideoFilePath:
     """ Build video file name from title, subtitle and season metadata
@@ -131,7 +115,7 @@ class VideoFilePath:
             if storage_group.local and os.path.isdir(storage_group.dirname):
                 # get avaliable space of storage group partition
                 # and use storage group with max. available space
-                free_space = self._get_free_space(storage_group.dirname)
+                free_space = Util.get_free_space(storage_group.dirname)
                 logging.debug('Storage group %s -> space %s', storage_group.dirname, free_space)
                 if free_space > max_free_space:
                     max_space_dir_name = storage_group.dirname
@@ -167,12 +151,8 @@ class VideoFilePath:
             parts.append(self.subtitle)
         return "_".join(' '.join(parts).split()) + ".m4v"
 
-    def _get_free_space(self, file_name):
-        """ Returns the free space of the partition of the specified file/directory """
-        stats = os.statvfs(file_name)
-        return stats.f_bfree * stats.f_frsize
-
-    def _match_title(self, title, name):
+    @staticmethod
+    def _match_title(title, name):
         """ Checks if file or directory name starts with specified title """
         simplified_title = title.lower()
         simplified_name = name.lower()
@@ -185,16 +165,16 @@ class VideoFilePath:
 class Transcoder:
     """ Handles transcoding a recording to a video file """
     def __init__(self, src_file, dst_file, preset, timeout):
-        self.status = Status()
         self.timer = None
         self.src_file = src_file
         self.dst_file = dst_file
         self.preset = preset
         self.timeout = timeout
 
-    def _abort(self, process):
+    @staticmethod
+    def _abort(process):
         """ Abort transcoding after timeout """
-        self.status.set_error('Aborting transcode due to timeout')
+        Status.set_error('Aborting transcode due to timeout')
         process.kill()
 
     def _start_timer(self, process):
@@ -218,8 +198,8 @@ class Transcoder:
             is copied to the video metadata.
         """
         # get channel id and start time to identify recording
-        chan_id = self.status.get_chan_id()
-        start_time = self.status.get_start_time()
+        chan_id = Status.get_chan_id()
+        start_time = Status.get_start_time()
         if not start_time or not chan_id:
             logging.debug('Determine chanid and starttime from filename')
             # extract chanid and starttime from recording file name
@@ -326,12 +306,12 @@ class Transcoder:
                     if last_token == 'ETA':
                         eta = token.replace(')', '')
                     if eta and progress and progress > last_progress:
-                        self.status.set_progress(progress, eta)
+                        Status.set_progress(progress, eta)
                         last_progress = progress
                         break
                     last_token = token
                 # check if job was stopped externally
-                if self.status.get_cmd() == Job.STOP:
+                if Status.get_cmd() == Job.STOP:
                     proc.kill()
                     break
                 line = ''
@@ -348,14 +328,15 @@ class Transcoder:
 
         return res
 
-    def _merge_parts(self, parts, dst_file):
+    @staticmethod
+    def _merge_parts(parts, dst_file):
         logging.debug('Merging transcoded parts %s', parts)
         list_file = f'{os.path.splitext(dst_file)[0]}_partlist.txt'
         with open(list_file, "w") as text_file:
             for part in parts:
                 text_file.write(f'file {part}\n')
 
-        self.status.set_comment('Merging transcoded parts')
+        Status.set_comment('Merging transcoded parts')
 
         args = []
         args.append('ffmpeg')
@@ -504,6 +485,12 @@ class Util:
         return "%.1f %s" % (num, 'PB')
 
     @staticmethod
+    def get_free_space(file_name):
+        """ Returns the free space of the partition of the specified file/directory """
+        stats = os.statvfs(file_name)
+        return stats.f_bfree * stats.f_frsize
+
+    @staticmethod
     def get_video_length(filename):
         """ Determines the video length using ffprobe
             Returns the video length in minutes.
@@ -592,6 +579,31 @@ class Util:
         except subprocess.CalledProcessError as error:
             logging.error(error.stderr)
 
+    @staticmethod
+    def show_notification(msg, msg_type):
+        """ Displays a visual notification on active frontends """
+        args = []
+        args.append('mythutil')
+        args.append('--notification')
+        args.append('--origin')
+        args.append('\"' + __file__ + '\"')
+        args.append('--timeout')
+        args.append('60')
+        args.append('--message_text')
+        args.append(msg)
+        args.append('--type')
+        args.append(msg_type)
+        try:
+            subprocess.run(args, capture_output=True, text=True, check=True)
+        except subprocess.CalledProcessError as error:
+            logging.error(error.stderr)
+        if msg_type == 'error':
+            logging.error(msg)
+        elif msg_type == "warning":
+            logging.warning(msg)
+        elif msg_type == "normal":
+            logging.info(msg)
+
 def parse_arguments():
     """ Parses command line arguments """
     parser = argparse.ArgumentParser(description='Transcode recording and move it to video storage')
@@ -665,20 +677,20 @@ def main():
     if status.get_cmd() == Job.STOP:
         status.set_status(Job.CANCELLED)
         status.set_comment('Stopped transcoding')
-        status.show_notification(f'Stopped transcoding \"{opts.rec_title}\"', 'warning')
+        Util.show_notification(f'Stopped transcoding \"{opts.rec_title}\"', 'warning')
         sys.exit(4)
     elif res == 0:
         Util.add_video(rec_path, vid_path)
         Util.scan_videos()
     elif res != 0:
         status.set_error(f'Failed transcoding (error {res})')
-        status.show_notification(f'Failed transcoding \"{opts.rec_title}\" (error {res})', 'error')
+        Util.show_notification(f'Failed transcoding \"{opts.rec_title}\" (error {res})', 'error')
         sys.exit(res)
 
     rec_size = Util.format_file_size(os.stat(rec_path).st_size)
     vid_size = Util.format_file_size(os.stat(vid_path).st_size)
     size_status = f'{rec_size} => {vid_size}'
-    status.show_notification(f'Finished transcoding "{opts.rec_title}"\n{size_status}', 'normal')
+    Util.show_notification(f'Finished transcoding "{opts.rec_title}"\n{size_status}', 'normal')
     status.set_comment(f'Finished transcoding\n{size_status}')
     status.set_status(Job.FINISHED)
 
