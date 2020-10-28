@@ -9,6 +9,7 @@ import subprocess
 import logging
 import math
 import urllib.parse
+import re
 from threading import Timer
 from MythTV import Job, Recorded, MythError, MythDB
 from MythTV.utility import datetime
@@ -224,10 +225,10 @@ class Transcoder:
 
         if not cuts:
             # transcode whole file directly
-            res = self._transcode_single()
+            res = self._transcode_single(self.dst_file)
         elif len(cuts) == 1:
             # transcode single part directly
-            res = self._transcode_single(cuts[0])
+            res = self._transcode_single(self.dst_file, cuts[0])
         else:
             # transcode each part on its own
             res = self._transcode_multiple(cuts)
@@ -242,7 +243,7 @@ class Transcoder:
         for cut in cuts:
             dst_file_part = f'{dst_file_base_name}_part_{cut_number}{dst_file_ext}'
             logging.info('Transcoding part %s/%s to %s', cut_number, len(cuts), dst_file_part)
-            res = self._transcode_single(cut)
+            res = self._transcode_single(dst_file_part, cut)
             if res != 0:
                 break
             cut_number += 1
@@ -254,11 +255,11 @@ class Transcoder:
 
         # delete transcoded parts
         for tmp_file in tmp_files:
-            if os.path.isfile(tmp_file):
-                os.remove(tmp_file)
+            Util.remove_file(tmp_file)
+
         return res
 
-    def _transcode_single(self, frames=None):
+    def _transcode_single(self, dst_file, frames=None):
         """ Start HandBrake to transcodes all or a single part (identified by
             start and end frame) of the source file
             A timer is used to abort the transcoding if there was no progress
@@ -272,7 +273,7 @@ class Transcoder:
         args.append('-i')
         args.append(self.src_file)
         args.append('-o')
-        args.append(self.dst_file)
+        args.append(dst_file)
         if frames:
             logging.debug('Transcoding from frame %s to %s', frames[0], frames[1])
             # pass start and end position of remaining part to handbrake
@@ -288,45 +289,48 @@ class Transcoder:
         # start timer to abort transcode process if it hangs
         self._start_timer(proc)
 
+        # regex pattern to find prograss and ETA in output line
+        pattern = re.compile(r"([\d]*\.[\d]*)(?=\s\%)(.*fps.*)(?<=[ETA]\s)([\d]*h[\d]*m[\d]*s)")
+
         line = ''
         last_progress = 0
         while True:
             char = proc.stdout.read(1)
-            if char == '' and proc.poll():
+            if char == '' and proc.poll() is not None:
+                logging.debug("Process has died")
                 break  # Aborted, no characters available, process died.
             if char == '\n':
-                last_token = ''
-                progress = None
-                eta = None
                 # new line, restart abort timer
                 self._start_timer(proc)
-                for token in line.split():
-                    if token == '%':
-                        progress = int(float(last_token))
-                    if last_token == 'ETA':
-                        eta = token.replace(')', '')
-                    if eta and progress and progress > last_progress:
+
+                progress = None
+                eta = None
+                try:
+                    if matched := re.search(pattern, line):
+                        progress = int(float(matched.group(1)))
+                        eta = matched.group(3)
+                except IndexError:
+                    pass
+                else:
+                    if progress and eta and progress > last_progress:
                         Status.set_progress(progress, eta)
                         last_progress = progress
-                        break
-                    last_token = token
+                line = ''
                 # check if job was stopped externally
                 if Status.get_cmd() == Job.STOP:
                     proc.kill()
                     break
-                line = ''
             else:
                 line += char
-        res = proc.wait()
+        proc.wait()
         self._stop_timer()
         # remove video file on failure
-        if res != 0:
+        if proc.returncode != 0:
             # print transcoding error output
             logging.error(proc.stderr.read())
-            if os.path.isfile(self.dst_file):
-                os.remove(self.dst_file)
+            Util.remove_file(dst_file)
 
-        return res
+        return proc.returncode
 
     @staticmethod
     def _merge_parts(parts, dst_file):
@@ -354,9 +358,9 @@ class Transcoder:
             proc = subprocess.run(args, capture_output=True, text=True, check=True)
         except subprocess.CalledProcessError as error:
             logging.error(error.stderr)
-            os.remove(dst_file)
+            Util.remove_file(dst_file)
         finally:
-            os.remove(list_file)
+            Util.remove_file(list_file)
 
         return proc.returncode
 
@@ -603,6 +607,14 @@ class Util:
             logging.warning(msg)
         elif msg_type == "normal":
             logging.info(msg)
+
+    @staticmethod
+    def remove_file(filename):
+        """ Safely removes specified file """
+        if os.path.isfile(filename):
+            logging.debug('Removing file %s', filename)
+            os.remove(filename)
+
 
 def parse_arguments():
     """ Parses command line arguments """
