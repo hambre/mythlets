@@ -84,7 +84,7 @@ class VideoFilePath:
     """ Build video file name from title, subtitle and season metadata
         Also finds best matching storage group from different criteria.
     """
-    def __init__(self, title, subtitle = None, season = 0, episode = 0):
+    def __init__(self, title, subtitle=None, season=0, episode=0):
         self.title = title
         self.subtitle = subtitle
         self.season = season
@@ -239,7 +239,7 @@ class Transcoder:
         # transcode each part on its own
         cut_number = 1
         tmp_files = []
-        dst_file_base_name,dst_file_ext = os.path.splitext(self.dst_file)
+        dst_file_base_name, dst_file_ext = os.path.splitext(self.dst_file)
         for cut in cuts:
             dst_file_part = f'{dst_file_base_name}_part_{cut_number}{dst_file_ext}'
             logging.info('Transcoding part %s/%s to %s', cut_number, len(cuts), dst_file_part)
@@ -383,9 +383,9 @@ class Backend:
     def get_storage_group_data(self, group_name=None):
         """ Retrieve storage group data from backend """
         if group_name:
-            data =f'HostName={self.host_name}&GroupName={group_name}'
+            data = f'HostName={self.host_name}&GroupName={group_name}'
         else:
-            data =f'HostName={self.host_name}'
+            data = f'HostName={self.host_name}'
         try:
             result = self.mbe.send(
                 endpoint='Myth/GetStorageGroupDirs', rest=data
@@ -476,6 +476,7 @@ class Backend:
         except RuntimeError as error:
             logging.error('\nFatal error: "%s"', error)
         return False
+
 
 class Util:
     """ Utility class """
@@ -645,6 +646,7 @@ def parse_arguments():
     logging.debug('Command line: %s', args)
 
     return args
+
 
 def main():
     """ Main entry function """
