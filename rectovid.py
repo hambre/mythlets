@@ -11,8 +11,7 @@ import math
 import urllib.parse
 import re
 from threading import Timer
-from MythTV import Job, Recorded, MythError, MythDB
-from MythTV.utility import datetime
+from MythTV import Job
 from MythTV.services_api import send as api
 
 sys.path.append("/usr/bin")
@@ -65,20 +64,6 @@ class Status:
         # create new job object to pull current state from database
         return Job(Status.myth_job_id).cmds
 
-    @staticmethod
-    def get_chan_id():
-        """ Reads the chanid from the myth job object """
-        if Status.myth_job:
-            return Status.myth_job.chanid
-        return None
-
-    @staticmethod
-    def get_start_time():
-        """ Reads the starttime from the myth job object """
-        if Status.myth_job:
-            return Status.myth_job.starttime
-        return None
-
 
 class VideoFilePath:
     """ Build video file name from title, subtitle and season metadata
@@ -106,22 +91,27 @@ class VideoFilePath:
             2. Directory matching recording title (useful for series)
             3. Directory containing files matching the title
         """
-        myth_db = MythDB()
+        mbe = Backend()
         matched_dir_name = None
         title = "_".join(self.title.split())
         max_free_space = 0
         max_space_dir_name = None
-        for storage_group in myth_db.getStorageGroup(groupname='Videos'):
+        for storage_group in mbe.get_storage_group_data(group_name='Videos'):
+            if storage_group['HostName'] != mbe.host_name:
+                continue
+            if storage_group['DirWrite'] != 'true':
+                continue
+            storage_dir = storage_group['DirName']
             # search given group
-            if storage_group.local and os.path.isdir(storage_group.dirname):
+            if os.path.isdir(storage_dir):
                 # get avaliable space of storage group partition
                 # and use storage group with max. available space
-                free_space = Util.get_free_space(storage_group.dirname)
-                logging.debug('Storage group %s -> space %s', storage_group.dirname, free_space)
+                free_space = int(storage_group['KiBFree'])
+                logging.debug('Storage group %s -> space %s', storage_dir, free_space)
                 if free_space > max_free_space:
-                    max_space_dir_name = storage_group.dirname
+                    max_space_dir_name = storage_dir
                     max_free_space = free_space
-                for sg_root, sg_dirs, sg_files in os.walk(storage_group.dirname, followlinks=True):
+                for sg_root, sg_dirs, sg_files in os.walk(storage_dir, followlinks=True):
                     # first check subdir for match
                     for sg_dir in sg_dirs:
                         if self._match_title(title, sg_dir):
@@ -198,59 +188,45 @@ class Transcoder:
             At the end the video is added to the database and metadata of the recording
             is copied to the video metadata.
         """
-        # get channel id and start time to identify recording
-        chan_id = Status.get_chan_id()
-        start_time = Status.get_start_time()
-        if not start_time or not chan_id:
-            logging.debug('Determine chanid and starttime from filename')
-            # extract chanid and starttime from recording file name
-            src_file_base_name = os.path.splitext(os.path.basename(self.src_file))[0]
-            (chan_id, start_time) = src_file_base_name.split('_', 2)
-            start_time = datetime.duck(start_time)
-
-        # convert starttime from UTC
-        start_time = datetime.fromnaiveutc(start_time)
-        logging.debug('Using chanid=%s and starttime=%s', chan_id, start_time)
-
         # obtain cutlist
         try:
-            myth_rec = Recorded((chan_id, start_time), MythDB())
-            cuts = myth_rec.markup.getuncutlist()
-        except MythError as err:
-            logging.error('Could not read cutlist (%s)', err.message)
+            mbe = Backend()
+            rec_id = mbe.get_recording_id(self.src_file)
+            parts = mbe.get_recording_uncutlist(rec_id)
+        except:
             return 1
 
-        if cuts:
-            logging.debug('Found %s cuts: %s', len(cuts), cuts)
+        if parts:
+            logging.debug('Found %s parts: %s', len(parts), parts)
 
-        if not cuts:
+        if not parts:
             # transcode whole file directly
             res = self._transcode_single(self.dst_file)
-        elif len(cuts) == 1:
+        elif len(parts) == 1:
             # transcode single part directly
-            res = self._transcode_single(self.dst_file, cuts[0])
+            res = self._transcode_single(self.dst_file, parts[0])
         else:
             # transcode each part on its own
-            res = self._transcode_multiple(cuts)
+            res = self._transcode_multiple(parts)
 
         return res
 
-    def _transcode_multiple(self, cuts):
+    def _transcode_multiple(self, parts):
         # transcode each part on its own
-        cut_number = 1
+        part_number = 1
         tmp_files = []
         dst_file_base_name, dst_file_ext = os.path.splitext(self.dst_file)
-        for cut in cuts:
-            dst_file_part = f'{dst_file_base_name}_part_{cut_number}{dst_file_ext}'
-            logging.info('Transcoding part %s/%s to %s', cut_number, len(cuts), dst_file_part)
-            res = self._transcode_single(dst_file_part, cut)
+        for part in parts:
+            dst_file_part = f'{dst_file_base_name}_part_{part_number}{dst_file_ext}'
+            logging.info('Transcoding part %s/%s to %s', part_number, len(parts), dst_file_part)
+            res = self._transcode_single(dst_file_part, part)
             if res != 0:
                 break
-            cut_number += 1
+            part_number += 1
             tmp_files.append(dst_file_part)
 
         # merge transcoded parts
-        if len(cuts) == len(tmp_files):
+        if len(parts) == len(tmp_files):
             res = self._merge_parts(tmp_files, self.dst_file)
 
         # delete transcoded parts
@@ -275,7 +251,7 @@ class Transcoder:
         args.append('-o')
         args.append(dst_file)
         if frames:
-            logging.debug('Transcoding from frame %s to %s', frames[0], frames[1])
+            logging.debug('Transcoding from frame %s to %s (%s frames)', frames[0], frames[1], frames[1]-frames[0])
             # pass start and end position of remaining part to handbrake
             args.append('--start-at')
             args.append(f'frame:{frames[0]}')
@@ -283,7 +259,7 @@ class Transcoder:
             args.append('--stop-at')
             args.append(f'frame:{frames[1]-frames[0]}')
 
-        logging.debug('Executing %s', args)
+        logging.debug('Executing \"%s\"', ' '.join(args))
         proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
         # start timer to abort transcode process if it hangs
@@ -297,7 +273,6 @@ class Transcoder:
         while True:
             char = proc.stdout.read(1)
             if char == '' and proc.poll() is not None:
-                logging.debug("Process has died")
                 break  # Aborted, no characters available, process died.
             if char == '\n':
                 # new line, restart abort timer
@@ -338,7 +313,7 @@ class Transcoder:
         list_file = f'{os.path.splitext(dst_file)[0]}_partlist.txt'
         with open(list_file, "w") as text_file:
             for part in parts:
-                text_file.write(f'file {part}\n')
+                text_file.write(f'file {os.path.basename(part)}\n')
 
         Status.set_comment('Merging transcoded parts')
 
@@ -353,7 +328,7 @@ class Transcoder:
         args.append('-c')
         args.append('copy')
         args.append(dst_file)
-        logging.debug('Executing %s', args)
+        logging.debug('Executing \"%s\"', ' '.join(args))
         try:
             proc = subprocess.run(args, capture_output=True, text=True, check=True)
         except subprocess.CalledProcessError as error:
@@ -367,7 +342,7 @@ class Transcoder:
 
 class Backend:
     """ Handles sending and receiving data to/from the Mythtv backend """
-    def __init__(self):
+    def __init__(self, debug=None):
         try:
             self.mbe = api.Send(host='localhost')
             result = self.mbe.send(
@@ -377,7 +352,9 @@ class Backend:
         except RuntimeError as error:
             logging.error('\nFatal error: "%s"', error)
         self.post_opts = {'wrmi': True}
-        if logging.getLogger().getEffectiveLevel() == logging.DEBUG:
+        if debug is not None:
+            self.post_opts['debug'] = debug
+        elif logging.getLogger().getEffectiveLevel() == logging.DEBUG:
             self.post_opts['debug'] = True
 
     def get_storage_group_data(self, group_name=None):
@@ -390,21 +367,73 @@ class Backend:
             result = self.mbe.send(
                 endpoint='Myth/GetStorageGroupDirs', rest=data
             )
-            return result
+            return result['StorageGroupDirList']['StorageGroupDirs']
         except RuntimeError as error:
             logging.error('\nFatal error: "%s"', error)
             return None
 
-    def get_storage_dirs(self, group_name=None):
+    def get_storage_dirs(self, group_name=None, host_name=None, writable=None):
         """ Returns list of storage group directories """
-        data = self.get_storage_group_data(group_name)
-        if not data:
+        storage_groups = self.get_storage_group_data(group_name)
+        if not storage_groups:
             return []
-        storage_groups = data['StorageGroupDirList']['StorageGroupDirs']
         dirs = []
         for sg_data in storage_groups:
-            dirs.append(sg_data['DirName'])
+            if writable and sg_data["DirWrite"] != 'true':
+                continue
+            if not host_name or sg_data['HostName'] == host_name:
+                dirs.append(sg_data['DirName'])
         return dirs
+
+    def get_recording_id(self, rec_path):
+        """ Retrieves recording id of specified recording file """
+        try:
+            data = f'Pathname={urllib.parse.quote(rec_path)}'
+            result = self.mbe.send(
+                endpoint='Dvr/RecordedIdForPathname', rest=data
+            )
+            return result['int']
+        except RuntimeError as error:
+            logging.error('\nFatal error: "%s"', error)
+        return None
+
+    def get_recording_metadata(self, rec_id):
+        """ Retrieves metadata of the specified recording """
+        try:
+            data = f'RecordedId={rec_id}'
+            result = self.mbe.send(
+                endpoint='Dvr/GetRecorded', rest=data
+            )
+            return result
+        except RuntimeError as error:
+            logging.error('\nFatal error: "%s"', error)
+        return None
+
+    def get_recording_uncutlist(self, rec_id):
+        """ Retrives cutlist of specified recording """
+        rec = self.get_recording_metadata(rec_id)
+        try:
+            data = f'RecordedId={rec_id}&OffsetType=Frames'
+            result = self.mbe.send(
+                endpoint='Dvr/GetRecordedCutList', rest=data
+            )
+            # create negated (uncut) list from cut list
+            start = 0
+            stop = 0
+            cuts = []
+            for cut in result['CutList']['Cuttings']:
+                if cut['Mark'] == '1': # start of cut
+                    stop = int(cut['Offset'])
+                    cuts.append((start, stop))
+                elif cut['Mark'] == '0': # end of cut
+                    start = int(cut['Offset'])
+                    stop = 9999999
+            if stop == 9999999:
+                cuts.append((start, stop))
+            return cuts
+        except RuntimeError as error:
+            logging.error('\nFatal error: "%s"', error)
+        return None
 
     def add_video(self, vid_path):
         """ Adds specified video to the database
@@ -438,30 +467,6 @@ class Backend:
             logging.error('\nFatal error: "%s"', error)
         return None
 
-    def get_recording_id(self, rec_path):
-        """ Retrieves recording id of specified recording file """
-        try:
-            data = f'Pathname={urllib.parse.quote(rec_path)}'
-            result = self.mbe.send(
-                endpoint='Dvr/RecordedIdForPathname', rest=data
-            )
-            return result['int']
-        except RuntimeError as error:
-            logging.error('\nFatal error: "%s"', error)
-        return None
-
-    def get_recording_metadata(self, rec_id):
-        """ Retrieves metadata of the specified recording """
-        try:
-            data = f'RecordedId={rec_id}'
-            result = self.mbe.send(
-                endpoint='Dvr/GetRecorded', rest=data
-            )
-            return result
-        except RuntimeError as error:
-            logging.error('\nFatal error: "%s"', error)
-        return None
-
     def update_video_metadata(self, vid_id, data):
         """ Updates metadata of the specified video """
         try:
@@ -476,6 +481,29 @@ class Backend:
         except RuntimeError as error:
             logging.error('\nFatal error: "%s"', error)
         return False
+
+    def show_notification(self, msg, msg_type):
+        """ Displays a visual notification on active frontends """
+        try:
+            data = {
+                'Message': msg,
+                'Origin': '\"' + __file__ + '\"',
+                'TimeOut': 60,
+                'Type': msg_type,
+                'Progress': -1
+            }
+            self.mbe.send(
+                endpoint='Myth/SendNotification', postdata=data, opts=self.post_opts
+            )
+        except RuntimeError as error:
+            logging.error('\nFatal error: "%s"', error)
+
+        if msg_type == 'error':
+            logging.error(msg)
+        elif msg_type == "warning":
+            logging.warning(msg)
+        elif msg_type == "normal":
+            logging.info(msg)
 
 
 class Util:
@@ -510,7 +538,7 @@ class Util:
         args.append('-of')
         args.append('default=noprint_wrappers=1:nokey=1')
         args.append(filename)
-        logging.debug('Executing %s', args)
+        logging.debug('Executing \"%s\"', ' '.join(args))
         try:
             proc = subprocess.run(args, capture_output=True, text=True, check=True)
             return int(math.ceil(float(proc.stdout) / 60.0))
