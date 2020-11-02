@@ -830,12 +830,6 @@ def parse_arguments():
     parser.add_argument('-f', '--file', dest='rec_file', help='recording file name')
     parser.add_argument('-d', '--dir', dest='rec_dir', help='recording directory name')
     parser.add_argument('-p', '--path', dest='rec_path', help='recording path name')
-    parser.add_argument('-t', '--title', dest='rec_title', help='recording title')
-    parser.add_argument('-s', '--subtitle', dest='rec_subtitle', help='recording subtitle')
-    parser.add_argument('-sn', '--season', dest='rec_season', default=0, type=int,
-                        help='recording season number')
-    parser.add_argument('-en', '--episode', dest='rec_episode', default=0, type=int,
-                        help='recording episode number')
     parser.add_argument('-j', '--jobid', dest='job_id', help='mythtv job id')
     parser.add_argument('--preset', dest='preset', default='General/HQ 1080p30 Surround',
                         help='Handbrake transcoding preset')
@@ -873,10 +867,6 @@ def main():
         status.set_error('Input recording file does not exist')
         sys.exit(1)
 
-    if opts.rec_title is None and opts.rec_subtitle is None:
-        status.set_error('Title and/or subtitle not specified')
-        sys.exit(1)
-
     recording = Recording(rec_path)
 
     # build output file path
@@ -891,27 +881,27 @@ def main():
     status.set_status(Job.RUNNING)
 
     # start transcoding
-    logging.info('Started transcoding \"%s\"', opts.rec_title)
+    logging.info('Started transcoding \"%s\"', regording.get_title())
     logging.info('Source recording file : %s', recording.path)
     logging.info('Destination video file: %s', vid_path)
     res = Transcoder(recording, opts.preset, opts.timeout).transcode(vid_path)
     if status.get_cmd() == Job.STOP:
         status.set_status(Job.CANCELLED)
         status.set_comment('Stopped transcoding')
-        Util.show_notification(f'Stopped transcoding \"{opts.rec_title}\"', 'warning')
+        Util.show_notification(f'Stopped transcoding \"{regording.get_title()}\"', 'warning')
         sys.exit(4)
     elif res == 0:
         Util.add_video(recording.path, vid_path)
         Util.scan_videos()
     elif res != 0:
         status.set_error(f'Failed transcoding (error {res})')
-        Util.show_notification(f'Failed transcoding \"{opts.rec_title}\" (error {res})', 'error')
+        Util.show_notification(f'Failed transcoding \"{regording.get_title()}\" (error {res})', 'error')
         sys.exit(res)
 
     rec_size = Util.format_file_size(os.stat(recording.path).st_size)
     vid_size = Util.format_file_size(os.stat(vid_path).st_size)
     size_status = f'{rec_size} => {vid_size}'
-    Util.show_notification(f'Finished transcoding "{opts.rec_title}"\n{size_status}', 'normal')
+    Util.show_notification(f'Finished transcoding "{regording.get_title()}"\n{size_status}', 'normal')
     status.set_comment(f'Finished transcoding\n{size_status}')
     status.set_status(Job.FINISHED)
 
