@@ -881,27 +881,27 @@ def main():
     status.set_status(Job.RUNNING)
 
     # start transcoding
-    logging.info('Started transcoding \"%s\"', regording.get_title())
+    logging.info('Started transcoding \"%s\"', recording.get_title())
     logging.info('Source recording file : %s', recording.path)
     logging.info('Destination video file: %s', vid_path)
     res = Transcoder(recording, opts.preset, opts.timeout).transcode(vid_path)
     if status.get_cmd() == Job.STOP:
         status.set_status(Job.CANCELLED)
         status.set_comment('Stopped transcoding')
-        Util.show_notification(f'Stopped transcoding \"{regording.get_title()}\"', 'warning')
+        Util.show_notification(f'Stopped transcoding \"{recording.get_title()}\"', 'warning')
         sys.exit(4)
     elif res == 0:
         Util.add_video(recording.path, vid_path)
         Util.scan_videos()
     elif res != 0:
         status.set_error(f'Failed transcoding (error {res})')
-        Util.show_notification(f'Failed transcoding \"{regording.get_title()}\" (error {res})', 'error')
+        Util.show_notification(f'Failed transcoding \"{recording.get_title()}\" (error {res})', 'error')
         sys.exit(res)
 
     rec_size = Util.format_file_size(os.stat(recording.path).st_size)
     vid_size = Util.format_file_size(os.stat(vid_path).st_size)
     size_status = f'{rec_size} => {vid_size}'
-    Util.show_notification(f'Finished transcoding "{regording.get_title()}"\n{size_status}', 'normal')
+    Util.show_notification(f'Finished transcoding "{recording.get_title()}"\n{size_status}', 'normal')
     status.set_comment(f'Finished transcoding\n{size_status}')
     status.set_status(Job.FINISHED)
 
