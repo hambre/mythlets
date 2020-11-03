@@ -102,28 +102,28 @@ class VideoFilePath:
                 continue
             storage_dir = storage_group['DirName']
             # search given group
-            if os.path.isdir(storage_dir):
-                # get avaliable space of storage group partition
-                # and use storage group with max. available space
-                free_space = int(storage_group['KiBFree'])
-                logging.debug('Storage group %s -> space %s', storage_dir, free_space)
-                if free_space > max_free_space:
-                    max_space_storage_dir = storage_dir
-                    max_free_space = free_space
-                for sg_root, sg_dirs, sg_files in os.walk(storage_dir, followlinks=True):
-                    # first check subdir for match
-                    for sg_dir in sg_dirs:
-                        if self._match_title(sg_dir):
-                            matched_dir_name = os.path.join(sg_root, sg_dir)
-                            matched_storage_dir = storage_dir
-                    # check file names for match
-                    for sg_file in sg_files:
-                        if self._match_title(sg_file):
-                            logging.debug('Using storage dir with files matching title')
-                            if sg_root == storage_dir:
-                                return storage_dir, ''
-                            else:
-                                return storage_dir, os.path.relpath(sg_root, storage_dir)
+            if not os.path.isdir(storage_dir):
+                continue
+            # get avaliable space of storage group partition
+            # and use storage group with max. available space
+            free_space = int(storage_group['KiBFree'])
+            logging.debug('Storage group %s -> space %s', storage_dir, free_space)
+            if free_space > max_free_space:
+                max_space_storage_dir = storage_dir
+                max_free_space = free_space
+            for sg_root, sg_dirs, sg_files in os.walk(storage_dir, followlinks=True):
+                # first check subdir for match
+                for sg_dir in sg_dirs:
+                    if self._match_title(sg_dir):
+                        matched_dir_name = os.path.join(sg_root, sg_dir)
+                        matched_storage_dir = storage_dir
+                # check file names for match
+                for sg_file in sg_files:
+                    if self._match_title(sg_file):
+                        logging.debug('Using storage dir with files matching title')
+                        if sg_root == storage_dir:
+                            return storage_dir, ''
+                        return storage_dir, os.path.relpath(sg_root, storage_dir)
         # return directory matching title if found
         if matched_dir_name:
             logging.debug('Using storage dir matching title')
@@ -895,13 +895,17 @@ def main():
         Util.scan_videos()
     elif res != 0:
         status.set_error(f'Failed transcoding (error {res})')
-        Util.show_notification(f'Failed transcoding \"{recording.get_title()}\" (error {res})', 'error')
+        Util.show_notification(
+            f'Failed transcoding \"{recording.get_title()}\" (error {res})', 'error'
+        )
         sys.exit(res)
 
     rec_size = Util.format_file_size(os.stat(recording.path).st_size)
     vid_size = Util.format_file_size(os.stat(vid_path).st_size)
     size_status = f'{rec_size} => {vid_size}'
-    Util.show_notification(f'Finished transcoding "{recording.get_title()}"\n{size_status}', 'normal')
+    Util.show_notification(
+        f'Finished transcoding "{recording.get_title()}"\n{size_status}', 'normal'
+    )
     status.set_comment(f'Finished transcoding\n{size_status}')
     status.set_status(Job.FINISHED)
 
