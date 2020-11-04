@@ -22,6 +22,8 @@ class Status:
     """ Manages status reporting """
     myth_job = None
     myth_job_id = 0
+    _subprogresses = []
+    _cur_subprogress = 0
 
     def __init__(self, job_id=0):
         if job_id and not Status.myth_job:
@@ -45,10 +47,38 @@ class Status:
             Status.myth_job.setComment(msg)
 
     @staticmethod
+    def add_subprogress(duration):
+        """ Adds a subprogress """
+        Status._subprogresses.append({'Duration': duration, 'Start': 0, 'End': 0})
+        total_duration = 0.0
+        for sub in Status._subprogresses:
+            total_duration += float(sub['Duration'])
+        current_duration = 0.0
+        for sub in Status._subprogresses:
+            sub['Start'] = current_duration / total_duration
+            current_duration += float(sub['Duration'])
+            sub['End'] = current_duration / total_duration
+
+    @staticmethod
+    def next_subprogress():
+        """ Switches to next subprogress """
+        if Status._subprogresses:
+            Status._cur_subprogress += 1
+
+    @staticmethod
+    def clear_subprogress():
+        """ Clears subprogress list """
+        Status._subprogresses = []
+        Status._cur_subprogress = 0
+
+    @staticmethod
     def set_progress(progress, eta):
         """ Sets progress as a comment to the myth job object """
+        if Status._subprogresses and Status._cur_subprogress < len(Status._subprogresses):
+            sub = Status._subprogresses[Status._cur_subprogress]
+            progress = int(sub['Start']*100.0 + (sub['End'] - sub['Start']) * float(progress))
         if Status.myth_job:
-            if progress and eta:
+            if progress and eta and len(Status._subprogresses) <= 1:
                 Status.myth_job.setComment(f'Progress: {progress} %\nRemaining time: {eta}')
             elif progress:
                 Status.myth_job.setComment(f'Progress: {progress} %')
@@ -59,6 +89,13 @@ class Status:
         logging.debug('Setting job status to %s', new_status)
         if Status.myth_job:
             Status.myth_job.setStatus(new_status)
+
+    @staticmethod
+    def get_status():
+        """ Sets a state to the myth job object """
+        if Status.myth_job:
+            return Status.myth_job.status
+        return Job.UNKNOWN
 
     @staticmethod
     def get_cmd():
@@ -284,6 +321,10 @@ class Transcoder:
         return res
 
     def _transcode_multiple(self, dst_file, parts):
+        # initialize progress ranges
+        for part in parts:
+            Status.add_subprogress(part[1]-part[0])
+
         # transcode each part on its own
         part_number = 1
         tmp_files = []
@@ -296,6 +337,7 @@ class Transcoder:
                 break
             part_number += 1
             tmp_files.append(dst_file_part)
+            Status.next_subprogress()
 
         # merge transcoded parts
         if len(parts) == len(tmp_files):
@@ -304,6 +346,8 @@ class Transcoder:
         # delete transcoded parts
         for tmp_file in tmp_files:
             Util.remove_file(tmp_file)
+
+        Status.clear_subprogress()
 
         return res
 
@@ -385,7 +429,7 @@ class Transcoder:
         proc.wait()
         self._stop_timer()
         # remove video file on failure
-        if proc.returncode != 0 or Status.get_cmd() == Job.STOP:
+        if proc.returncode != 0 or Status.get_cmd() == Job.STOP or Status.get_status() == Job.ERRORED:
             # print transcoding error output
             logging.error(proc.stderr.read())
             Util.remove_file(dst_file)
@@ -463,7 +507,7 @@ class Transcoder:
         proc.wait()
         self._stop_timer()
         # remove video file on failure
-        if proc.returncode != 0 or Status.get_cmd() == Job.STOP:
+        if proc.returncode != 0 or Status.get_cmd() == Job.STOP or Status.get_status() == Job.ERRORED:
             # print transcoding error output
             logging.error(proc.stderr.read())
             Util.remove_file(dst_file)
