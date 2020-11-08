@@ -903,11 +903,20 @@ def parse_arguments():
                         help='timeout in seconds to abort transcoding process')
     parser.add_argument('-l', '--logfile', dest='log_file', default='',
                         help='optional log file location')
+    parser.add_argument('--loglevel', dest='log_level', default='info',
+                        help='optional log level (debug, info, warning, error, critical)')
 
     args = parser.parse_args()
 
+    numeric_level = getattr(logging, args.log_level.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise ValueError('Invalid log level: %s' % args.log_level)
+
     if args.log_file:
-        logging.basicConfig(filename=args.log_file, level=logging.DEBUG,
+        logging.basicConfig(filename=args.log_file, level=numeric_level,
+                            format='%(asctime)s %(levelname)s: %(message)s')
+    else:
+        logging.basicConfig(level=numeric_level,
                             format='%(asctime)s %(levelname)s: %(message)s')
 
     logging.debug('Command line: %s', args)
