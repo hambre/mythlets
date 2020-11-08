@@ -11,6 +11,7 @@ import math
 import urllib.parse
 import re
 import json
+import time
 from threading import Timer
 from MythTV import Job
 from MythTV.services_api import send as api
@@ -20,16 +21,18 @@ sys.path.append("/usr/bin")
 
 class Status:
     """ Manages status reporting """
-    myth_job = None
-    myth_job_id = 0
+    _myth_job = None
+    _myth_job_id = 0
     _subprogresses = []
     _cur_subprogress = 0
+    _progress_start = None
+    _last_progress = None
 
     def __init__(self, job_id=0):
-        if job_id and not Status.myth_job:
-            Status.myth_job_id = job_id
-            Status.myth_job = Job(job_id)
-            Status.myth_job.update(status=Job.STARTING)
+        if job_id and not Status._myth_job:
+            Status._myth_job_id = job_id
+            Status._myth_job = Job(job_id)
+            Status._myth_job.update(status=Job.STARTING)
             self.set_comment('Starting job...')
 
     @staticmethod
@@ -43,8 +46,8 @@ class Status:
     def set_comment(msg):
         """ Sets a comment text to the myth job object """
         logging.info(msg)
-        if Status.myth_job:
-            Status.myth_job.setComment(msg)
+        if Status._myth_job:
+            Status._myth_job.setComment(msg)
 
     @staticmethod
     def add_subprogress(duration):
@@ -66,44 +69,75 @@ class Status:
             Status._cur_subprogress += 1
 
     @staticmethod
-    def clear_subprogress():
-        """ Clears subprogress list """
+    def reset_progress():
+        """ Clears subprogress list and resets start time """
         Status._subprogresses = []
         Status._cur_subprogress = 0
+        Status._progress_start = None
+        Status._last_progress = None
 
     @staticmethod
-    def set_progress(progress, eta):
+    def init_progress():
+        """ Initializes progress start time """
+        Status._progress_start = time.time()
+        logging.debug(Status._subprogresses)
+
+    @staticmethod
+    def set_progress(progress):
         """ Sets progress as a comment to the myth job object """
+        if not progress:
+            return
         if Status._subprogresses and Status._cur_subprogress < len(Status._subprogresses):
             sub = Status._subprogresses[Status._cur_subprogress]
-            progress = int(sub['Start']*100.0 + (sub['End'] - sub['Start']) * float(progress))
-        if Status.myth_job:
-            if progress and eta and len(Status._subprogresses) <= 1:
-                Status.myth_job.setComment(f'Progress: {progress} %\nRemaining time: {eta}')
-            elif progress:
-                Status.myth_job.setComment(f'Progress: {progress} %')
+            progress = sub['Start']*100.0 + (sub['End'] - sub['Start']) * progress
+        if Status._last_progress and Status._last_progress == int(progress):
+            return
+
+        Status._last_progress = int(progress)
+
+        eta = None
+        if Status._progress_start and progress > 0.0:
+            time_spent = time.time() - Status._progress_start
+            time_left = (100.0 - progress) * time_spent / progress
+            eta = time.strftime('%H:%M:%S', time.gmtime(time_left))
+
+        if Status._myth_job:
+            if eta:
+                Status._myth_job.setComment(f'Progress: {int(progress)} %\nRemaining time: {eta}')
+            else:
+                Status._myth_job.setComment(f'Progress: {int(progress)} %')
 
     @staticmethod
     def set_status(new_status):
         """ Sets a state to the myth job object """
-        logging.debug('Setting job status to %s', new_status)
-        if Status.myth_job:
-            Status.myth_job.setStatus(new_status)
+        if Status._myth_job:
+            logging.debug('Setting job status to %s', new_status)
+            Status._myth_job.setStatus(new_status)
 
     @staticmethod
     def get_status():
-        """ Sets a state to the myth job object """
-        if Status.myth_job:
-            return Status.myth_job.status
+        """ Gets state of the myth job object """
+        if Status._myth_job:
+            return Status._myth_job.status
         return Job.UNKNOWN
 
     @staticmethod
     def get_cmd():
         """ Reads the current myth job state from the database """
-        if Status.myth_job_id == 0:
+        if Status._myth_job_id == 0:
             return Job.UNKNOWN
         # create new job object to pull current state from database
-        return Job(Status.myth_job_id).cmds
+        return Job(Status._myth_job_id).cmds
+
+    @staticmethod
+    def canceled():
+        """ Checks if myth job object has been stopped/canceled """
+        return Status.get_cmd() == Job.STOP or Status.get_status() == Job.CANCELLED
+
+    @staticmethod
+    def failed():
+        """ Checks if myth job object has error state """
+        return Status.get_status() == Job.ERRORED
 
 
 class VideoFilePath:
@@ -308,6 +342,8 @@ class Transcoder:
         if parts:
             logging.debug('Found %s parts: %s', len(parts), parts)
 
+        Status.init_progress()
+
         if not parts:
             # transcode whole file directly
             res = self._transcode_single(dst_file)
@@ -317,6 +353,8 @@ class Transcoder:
         else:
             # transcode each part on its own
             res = self._transcode_multiple(dst_file, parts)
+
+        Status.reset_progress()
 
         return res
 
@@ -346,8 +384,6 @@ class Transcoder:
         # delete transcoded parts
         for tmp_file in tmp_files:
             Util.remove_file(tmp_file)
-
-        Status.clear_subprogress()
 
         return res
 
@@ -398,9 +434,8 @@ class Transcoder:
         self._start_timer(proc)
 
         # regex pattern to find prograss and ETA in output line
-        pattern = re.compile(r"([\d]*\.[\d]*)(?=\s\%)(.*fps.*)(?<=[ETA]\s)([\d]*h[\d]*m[\d]*s)")
+        pattern = re.compile(r"([\d]*\.[\d]*)(?=\s\%.*fps)")
 
-        last_progress = 0
         while True:
             line = proc.stdout.readline()
             if line == '' and proc.poll() is not None:
@@ -410,29 +445,25 @@ class Transcoder:
                 self._start_timer(proc)
 
                 progress = None
-                eta = None
                 try:
                     if matched := re.search(pattern, line):
-                        progress = int(float(matched.group(1)))
-                        eta = matched.group(3)
+                        progress = float(matched.group(1))
                 except IndexError:
                     pass
                 else:
-                    if progress and eta and progress > last_progress:
-                        Status.set_progress(progress, eta)
-                        last_progress = progress
+                    Status.set_progress(progress)
                 # check if job was stopped externally
-                if Status.get_cmd() == Job.STOP:
+                if Status.canceled():
                     proc.kill()
                     break
 
-        proc.wait()
-        self._stop_timer()
         # remove video file on failure
-        if proc.returncode != 0 or Status.get_cmd() == Job.STOP or Status.get_status() == Job.ERRORED:
+        if proc.wait() != 0 or Status.canceled() or Status.failed():
             # print transcoding error output
             logging.error(proc.stderr.read())
             Util.remove_file(dst_file)
+
+        self._stop_timer()
 
         return proc.returncode
 
@@ -441,15 +472,11 @@ class Transcoder:
         fps = self.recording.get_video_fps()
         logging.debug('Using %s fps', fps)
 
-        frame_count = 0
-        if frames:
-            frame_count = float(frames[1]-frames[0])
+        frame_count = float(frames[1]-frames[0]) if frames else 0
+
         # start the copying process
         args = []
         args.append('ffmpeg')
-        args.append('-fflags')
-        args.append('+genpts')
-        #args.append('-stats')
         if frames:
             args.append('-ss')
             args.append(f'{float(frames[0]) / fps}')
@@ -461,9 +488,7 @@ class Transcoder:
         args.append('-c')
         args.append('copy')
         args.append('-map')
-        args.append('0:v')
-        args.append('-map')
-        args.append('0:a')
+        args.append('0')
         args.append('-map')
         args.append('-0:s')
         args.append('-map')
@@ -479,7 +504,6 @@ class Transcoder:
         # regex pattern to find prograss and ETA in output line
         pattern = re.compile(r"^frame=([ ]*[\d]*)")
 
-        last_progress = 0
         while True:
             line = proc.stderr.readline()
             if line == '' and proc.poll() is not None:
@@ -492,25 +516,23 @@ class Transcoder:
                 try:
                     if matched := re.search(pattern, line):
                         frame = float(matched.group(1))
-                        progress = int(100.0 * frame / frame_count)
+                        progress = 100.0 * frame / frame_count
                 except IndexError:
                     pass
                 else:
-                    if progress and progress > last_progress:
-                        Status.set_progress(progress, None)
-                        last_progress = progress
+                    Status.set_progress(progress)
                 # check if job was stopped externally
-                if Status.get_cmd() == Job.STOP:
+                if Status.canceled():
                     proc.kill()
                     break
 
-        proc.wait()
-        self._stop_timer()
         # remove video file on failure
-        if proc.returncode != 0 or Status.get_cmd() == Job.STOP or Status.get_status() == Job.ERRORED:
+        if proc.wait() != 0 or Status.canceled() or Status.failed():
             # print transcoding error output
             logging.error(proc.stderr.read())
             Util.remove_file(dst_file)
+
+        self._stop_timer()
 
         return proc.returncode
 
