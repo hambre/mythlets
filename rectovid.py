@@ -12,6 +12,7 @@ import urllib.parse
 import re
 import json
 import time
+import configparser
 from threading import Timer
 from MythTV import Job
 from MythTV.services_api import send as api
@@ -897,29 +898,41 @@ def parse_arguments():
     parser.add_argument('-d', '--dir', dest='rec_dir', help='recording directory name')
     parser.add_argument('-p', '--path', dest='rec_path', help='recording path name')
     parser.add_argument('-j', '--jobid', dest='job_id', help='mythtv job id')
-    parser.add_argument('--preset', dest='preset', default='General/HQ 1080p30 Surround',
-                        help='Handbrake transcoding preset')
-    parser.add_argument('--timeout', dest='timeout', default=300, type=int,
+    parser.add_argument('--preset', dest='preset', help='Handbrake transcoding preset')
+    parser.add_argument('--timeout', dest='timeout', type=int,
                         help='timeout in seconds to abort transcoding process')
-    parser.add_argument('-l', '--logfile', dest='log_file', default='',
-                        help='optional log file location')
-    parser.add_argument('--loglevel', dest='log_level', default='info',
+    parser.add_argument('-l', '--logfile', dest='log_file', help='optional log file location')
+    parser.add_argument('-c', '--cfgfile', dest='cfg_file', default='~/rectovid.conf',
+                        help='optional config file location')
+    parser.add_argument('--loglevel', dest='log_level',
                         help='optional log level (debug, info, warning, error, critical)')
 
     args = parser.parse_args()
+
+    # get options from config file if not passed as parameters
+    config = configparser.ConfigParser()
+    config.read(os.path.expanduser(args.cfg_file))
+    if not args.timeout:
+        args.timeout = config.getint('Transcoding', 'Timeout', fallback=300)
+    if not args.preset:
+        args.preset = config.get('Transcoding', 'Preset', fallback='General/HQ 1080p30 Surround')
+    if not args.log_file:
+        args.log_file = config.get('Logging', 'LogFile', fallback=None)
+    if not args.log_level:
+        args.log_level = config.get('Logging', 'LogLevel', fallback='info')
 
     numeric_level = getattr(logging, args.log_level.upper(), None)
     if not isinstance(numeric_level, int):
         raise ValueError('Invalid log level: %s' % args.log_level)
 
     if args.log_file:
-        logging.basicConfig(filename=args.log_file, level=numeric_level,
+        logging.basicConfig(filename=os.path.expanduser(args.log_file), level=numeric_level,
                             format='%(asctime)s %(levelname)s: %(message)s')
     else:
         logging.basicConfig(level=numeric_level,
                             format='%(asctime)s %(levelname)s: %(message)s')
 
-    logging.debug('Command line: %s', args)
+    logging.debug('Options: %s', args)
 
     return args
 
