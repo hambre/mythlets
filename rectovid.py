@@ -696,6 +696,18 @@ class Backend:
             logging.error('\nFatal error: "%s"', error)
         return None
 
+    def get_video_metadata(self, vid_id):
+        """ Retrieves the metadata of the specified video file """
+        try:
+            data = f'Id={vid_id}'
+            result = self.mbe.send(
+                endpoint='Video/GetVideo', rest=data
+            )
+            return result['VideoMetadataInfo']
+        except RuntimeError as error:
+            logging.error('\nFatal error: "%s"', error)
+        return None
+
     def update_video_metadata(self, vid_id, data):
         """ Updates metadata of the specified video """
         try:
@@ -823,7 +835,6 @@ class Util:
         rec_data = mbe.get_recording_metadata(rec_id)
 
         # collect metadata
-        description = rec_data['Description']
         director = []
         actors = []
         for member in rec_data['Cast']['CastMembers']:
@@ -832,17 +843,35 @@ class Util:
             if member['Role'] == 'actor':
                 actors.append(member['Name'])
         vid_length = Util.get_video_length(vid_path)
+        fanart = None
+        coverart = None
+        for artwork in rec_data['Artwork']['ArtworkInfos']:
+            if artwork['Type'] == 'coverart':
+                coverart = os.path.split(artwork['FileName'])[1]
+            elif artwork['Type'] == 'fanart':
+                fanart = os.path.split(artwork['FileName'])[1]
 
         # update video metadata
         data = {}
-        if description:
-            data['Plot'] = description
+        if 'Description' in rec_data:
+            data['Plot'] = rec_data['Description']
+        if 'Category' in rec_data:
+            data['Genres'] = rec_data['Category'].title()
         if vid_length >= 1:
             data['Length'] = vid_length
         if director:
             data['Director'] = ', '.join(director)
         if actors:
             data['Cast'] = ', '.join(actors)
+        if 'CatType' in rec_data and rec_data['CatType'] == 'movie':
+            data['ContentType'] = 'MOVIE'
+        if 'Airdate' in rec_data:
+            data['Year'] = int(rec_data['Airdate'].split('-')[0])
+        if fanart:
+            data['Fanart'] = fanart
+        if coverart:
+            data['CoverFile'] = coverart
+
         if mbe.update_video_metadata(vid_id, data):
             logging.info('Successfully updated video metadata')
 
