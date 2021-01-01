@@ -303,10 +303,11 @@ class Recording:
 
 class Transcoder:
     """ Handles transcoding a recording to a video file """
-    def __init__(self, recording, preset, timeout):
+    def __init__(self, recording, preset, preset_file, timeout):
         self.timer = None
         self.recording = recording
         self.preset = preset
+        self.preset_file = preset_file
         self.timeout = timeout
 
     @staticmethod
@@ -370,7 +371,7 @@ class Transcoder:
         dst_file_base_name, dst_file_ext = os.path.splitext(dst_file)
         for part in parts:
             dst_file_part = f'{dst_file_base_name}_part_{part_number}{dst_file_ext}'
-            logging.info('Transcoding part %s/%s to %s', part_number, len(parts), dst_file_part)
+            logging.info('Processing part %s/%s to %s', part_number, len(parts), dst_file_part)
             res = self._transcode_single(dst_file_part, part)
             if res != 0:
                 break
@@ -392,14 +393,14 @@ class Transcoder:
         """ Transcodes single part of video """
 
         if frames:
-            logging.debug('Transcoding from frame %s to %s (%s frames)',
+            logging.debug('Processing frame %s to %s (%s frames)',
                           frames[0], frames[1], frames[1]-frames[0])
 
         if self.recording.get_video_codec() == 'mpeg2video':
             logging.debug('Transcoding SD video')
             return self._transcode_single_sd(dst_file, frames)
         if self.recording.get_video_codec() == 'h264':
-            logging.debug('Transcoding HD video')
+            logging.debug('Copying HD video')
             return self._transcode_single_hd(dst_file, frames)
 
         logging.debug('Unknown video codec. Abort transcoding...')
@@ -414,6 +415,9 @@ class Transcoder:
         # start the transcoding process
         args = []
         args.append('HandBrakeCLI')
+        if self.preset_file:
+            args.append('--presetfile')
+            args.append(self.preset_file)
         args.append('--preset')
         args.append(self.preset)
         args.append('-i')
@@ -475,6 +479,8 @@ class Transcoder:
 
         frame_count = float(frames[1]-frames[0]) if frames else 0
 
+        streams = Util.get_video_streams(self.recording.path)
+
         # start the copying process
         args = []
         args.append('ffmpeg')
@@ -486,16 +492,30 @@ class Transcoder:
         if frames:
             args.append('-t')
             args.append(f'{float(frames[1]-frames[0]) / fps}')
-        args.append('-c')
+        args.append('-vcodec')
         args.append('copy')
+        args.append('-acodec')
+        args.append('copy')
+        args.append('-scodec')
+        args.append('dvdsub')
+        # select all video streams
         args.append('-map')
-        args.append('0')
+        args.append('0:v')
+        # select all audio streams
         args.append('-map')
-        args.append('-0:s')
-        args.append('-map')
-        args.append('-0:d')
-        args.append(dst_file)
+        args.append('0:a')
+        sub_stream_index = 0
+        for stream in streams:
+            if not 'codec_type' in stream or not 'codec_name' in stream:
+                continue
+            if stream['codec_type'] != 'subtitle':
+                continue
+            if stream['codec_name'] == 'dvb_subtitle':
+                args.append('-map')
+                args.append(f'0:s:{sub_stream_index}')
+            sub_stream_index += 1
 
+        args.append(dst_file)
         logging.debug('Executing \"%s\"', ' '.join(args))
         proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
@@ -927,14 +947,17 @@ def parse_arguments():
     parser.add_argument('-d', '--dir', dest='rec_dir', help='recording directory name')
     parser.add_argument('-p', '--path', dest='rec_path', help='recording path name')
     parser.add_argument('-j', '--jobid', dest='job_id', help='mythtv job id')
-    parser.add_argument('--preset', dest='preset', help='Handbrake transcoding preset')
+    parser.add_argument('-c', '--cfgfile', dest='cfg_file', default='~/rectovid.conf',
+                        help='optional config file location (default: ~/rectovid.conf)')
+    parser.add_argument('--preset', dest='preset',
+                        help='Handbrake transcoding preset, call "HandBrakeCLI -z" to list supported presets')
+    parser.add_argument('--presetfile', dest='preset_file',
+                        help='Handbrake transcoding preset file to read from')
     parser.add_argument('--timeout', dest='timeout', type=int,
                         help='timeout in seconds to abort transcoding process')
-    parser.add_argument('-l', '--logfile', dest='log_file', help='optional log file location')
-    parser.add_argument('-c', '--cfgfile', dest='cfg_file', default='~/rectovid.conf',
-                        help='optional config file location')
+    parser.add_argument('-l', '--logfile', dest='log_file', help='optional log file location, enables logging to file')
     parser.add_argument('--loglevel', dest='log_level',
-                        help='optional log level (debug, info, warning, error, critical)')
+                        help='optional log level (supported: debug, info, warning, error, critical; default: info)')
 
     args = parser.parse_args()
 
@@ -945,6 +968,8 @@ def parse_arguments():
         args.timeout = config.getint('Transcoding', 'Timeout', fallback=300)
     if not args.preset:
         args.preset = config.get('Transcoding', 'Preset', fallback='General/HQ 1080p30 Surround')
+    if not args.preset_file:
+        args.preset_file = config.get('Transcoding', 'PresetFile', fallback='')
     if not args.log_file:
         args.log_file = config.get('Logging', 'LogFile', fallback=None)
     if not args.log_level:
@@ -1001,7 +1026,7 @@ def main():
     logging.info('Started transcoding \"%s\"', recording.get_title())
     logging.info('Source recording file : %s', recording.path)
     logging.info('Destination video file: %s', vid_path)
-    res = Transcoder(recording, opts.preset, opts.timeout).transcode(vid_path)
+    res = Transcoder(recording, opts.preset, opts.preset_file, opts.timeout).transcode(vid_path)
     if status.get_cmd() == Job.STOP:
         status.set_status(Job.CANCELLED)
         status.set_comment('Stopped transcoding')
