@@ -205,7 +205,7 @@ class VideoFilePath:
         return max_space_storage_dir, ''
 
     def _build_name(self):
-        """ Builds video file name: "The_title(_-_|_SxxEyy_][The_Subtitle].[m4v|mkv]" """
+        """ Builds video file name: "The_title(_-_|_SxxEyy_][The_Subtitle].[mkv]" """
         parts = []
         title = self.recording.get_title()
         subtitle = self.recording.get_subtitle()
@@ -219,10 +219,7 @@ class VideoFilePath:
             parts.append('-')
         if subtitle and subtitle != "":
             parts.append(subtitle)
-        ext = '.m4v'
-        if self.recording.get_video_codec() == 'h264':
-            ext = '.mkv'
-        name = "_".join(' '.join(parts).split()) + ext
+        name = "_".join(' '.join(parts).split()) + '.mkv'
         for char in ('\''):
             name = name.replace(char, '')
         return name
@@ -333,8 +330,6 @@ class Transcoder:
             The cutlist of the recording (source file) is used to transcode
             multiple parts of the recording if neccessary and then merged into the final
             destination file.
-            At the end the video is added to the database and metadata of the recording
-            is copied to the video metadata.
         """
         # obtain recording parts to transcode
         parts = self.recording.get_uncut_list()
@@ -348,13 +343,35 @@ class Transcoder:
 
         if not parts:
             # transcode whole file directly
-            res = self._transcode_single(dst_file)
+            res = self._transcode_part(dst_file)
         elif len(parts) == 1:
             # transcode single part directly
-            res = self._transcode_single(dst_file, parts[0])
+            res = self._transcode_part(dst_file, parts[0])
         else:
             # transcode each part on its own
             res = self._transcode_multiple(dst_file, parts)
+
+        Status.reset_progress()
+
+        return res
+
+    def copy(self, dst_file):
+        """ Copies streams of the source file to the destination file using mkvmerge
+            The cutlist of the recording (source file) is used to copy
+            multiple parts of the recording if neccessary and then merged into the final
+            destination file.
+        """
+        # obtain recording parts to transcode
+        parts = self.recording.get_uncut_list()
+        if parts is None:
+            return 1
+
+        if parts:
+            logging.debug('Found %s parts: %s', len(parts), parts)
+
+        Status.init_progress()
+
+        res = self._copy_and_merge(dst_file, parts)
 
         Status.reset_progress()
 
@@ -372,7 +389,7 @@ class Transcoder:
         for part in parts:
             dst_file_part = f'{dst_file_base_name}_part_{part_number}{dst_file_ext}'
             logging.info('Processing part %s/%s to %s', part_number, len(parts), dst_file_part)
-            res = self._transcode_single(dst_file_part, part)
+            res = self._transcode_part(dst_file_part, part)
             if res != 0:
                 break
             part_number += 1
@@ -389,29 +406,77 @@ class Transcoder:
 
         return res
 
-    def _transcode_single(self, dst_file, frames=None):
-        """ Transcodes single part of video """
+    def _copy_and_merge(self, dst_file, parts):
+        # start the copying process
+        args = []
+        args.append('mkvmerge')
+        args.append('-o')
+        args.append(dst_file)
+        split_spec = ''
+        for part in parts:
+            split_spec += f'{"parts-frames:" if not split_spec else ",+"}{part[0]}-{part[1]}'
+        if split_spec:
+            args.append('--append-mode')
+            args.append('track')
+            args.append('--split')
+            args.append(split_spec)
+        args.append(self.recording.path)
 
-        if frames:
-            logging.debug('Processing frame %s to %s (%s frames)',
-                          frames[0], frames[1], frames[1]-frames[0])
+        logging.debug('Executing \"%s\"', ' '.join(args))
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-        if self.recording.get_video_codec() == 'mpeg2video':
-            logging.debug('Transcoding SD video')
-            return self._transcode_single_sd(dst_file, frames)
-        if self.recording.get_video_codec() == 'h264':
-            logging.debug('Copying HD video')
-            return self._transcode_single_hd(dst_file, frames)
+        # start timer to abort transcode process if it hangs
+        self._start_timer(proc)
 
-        logging.debug('Unknown video codec. Abort transcoding...')
-        return 2
+        # regex pattern to find prograss and ETA in output line
+        pattern = re.compile(r"^Progress:([ ]*[\d]*)")
 
-    def _transcode_single_sd(self, dst_file, frames=None):
+        while True:
+            line = proc.stdout.readline()
+            if line == '' and proc.poll() is not None:
+                break  # Aborted, no characters available, process died.
+            if line:
+                # new line, restart abort timer
+                self._start_timer(proc)
+                
+                if line.startswith('Warning:'):
+                    logging.warning(line)
+
+                progress = None
+                try:
+                    if matched := re.search(pattern, line):
+                        progress = float(matched.group(1))
+                except IndexError:
+                    pass
+                else:
+                    Status.set_progress(progress)
+                # check if job was stopped externally
+                if Status.canceled():
+                    proc.kill()
+                    break
+
+        # remove video file on failure
+        if proc.wait() == 2 or Status.canceled() or Status.failed():
+            # print transcoding error output
+            logging.error(proc.stderr.read())
+            Util.remove_file(dst_file)
+
+        self._stop_timer()
+
+        if proc.returncode == 1:
+            # a warning has occured
+            logging.info('Finished with warning(s)')
+            return 0
+
+        return proc.returncode
+
+    def _transcode_part(self, dst_file, frames=None):
         """ Start HandBrake to transcodes all or a single part (identified by
             start and end frame) of the source file
             A timer is used to abort the transcoding if there was no progress
             detected within a specfied timeout period.
         """
+
         # start the transcoding process
         args = []
         args.append('HandBrakeCLI')
@@ -425,6 +490,8 @@ class Transcoder:
         args.append('-o')
         args.append(dst_file)
         if frames:
+            logging.debug('Processing frame %s to %s (%s frames)',
+                          frames[0], frames[1], frames[1]-frames[0])
             # pass start and end position of remaining part to handbrake
             args.append('--start-at')
             args.append(f'frame:{frames[0]}')
@@ -472,8 +539,8 @@ class Transcoder:
 
         return proc.returncode
 
-    def _transcode_single_hd(self, dst_file, frames=None):
-        """ Use ffmpeg to copy video parts"""
+    def _copy_part(self, dst_file, frames=None):
+        """ Use ffmpeg to copy video part (deprecated) """
         fps = self.recording.get_video_fps()
         logging.debug('Using %s fps', fps)
 
@@ -824,6 +891,10 @@ class Util:
                     tokens = stream['tags']['DURATION'].split(':')
                     if tokens:
                         return int(tokens[0]) * 60 + int(tokens[1])
+                if 'tags' in stream and 'DURATION-eng' in stream['tags']:
+                    tokens = stream['tags']['DURATION-eng'].split(':')
+                    if tokens:
+                        return int(tokens[0]) * 60 + int(tokens[1])
         return 0
 
     @staticmethod
@@ -942,19 +1013,21 @@ class Util:
 
 def parse_arguments():
     """ Parses command line arguments """
-    parser = argparse.ArgumentParser(description='Transcode recording and move it to video storage')
+    parser = argparse.ArgumentParser(description='Convert recording and move it to video storage')
     parser.add_argument('-f', '--file', dest='rec_file', help='recording file name')
     parser.add_argument('-d', '--dir', dest='rec_dir', help='recording directory name')
     parser.add_argument('-p', '--path', dest='rec_path', help='recording path name')
     parser.add_argument('-j', '--jobid', dest='job_id', help='mythtv job id')
     parser.add_argument('-c', '--cfgfile', dest='cfg_file', default='~/rectovid.conf',
                         help='optional config file location (default: ~/rectovid.conf)')
+    parser.add_argument('-m', '--mode', dest='mode',
+                        help='Mode of processing (supported: copy, transcode) "copy" uses mkvmerge for stream copying, "transcode" uses Handbrake for transcoding')
     parser.add_argument('--preset', dest='preset',
                         help='Handbrake transcoding preset, call "HandBrakeCLI -z" to list supported presets')
     parser.add_argument('--presetfile', dest='preset_file',
                         help='Handbrake transcoding preset file to read from')
     parser.add_argument('--timeout', dest='timeout', type=int,
-                        help='timeout in seconds to abort transcoding process')
+                        help='timeout in seconds to abort processing')
     parser.add_argument('-l', '--logfile', dest='log_file', help='optional log file location, enables logging to file')
     parser.add_argument('--loglevel', dest='log_level',
                         help='optional log level (supported: debug, info, warning, error, critical; default: info)')
@@ -964,8 +1037,10 @@ def parse_arguments():
     # get options from config file if not passed as parameters
     config = configparser.ConfigParser()
     config.read(os.path.expanduser(args.cfg_file))
+    if not args.mode:
+        args.mode = config.getint('General', 'Mode', fallback='copy')
     if not args.timeout:
-        args.timeout = config.getint('Transcoding', 'Timeout', fallback=300)
+        args.timeout = config.getint('General', 'Timeout', fallback=300)
     if not args.preset:
         args.preset = config.get('Transcoding', 'Preset', fallback='General/HQ 1080p30 Surround')
     if not args.preset_file:
@@ -1022,23 +1097,31 @@ def main():
 
     status.set_status(Job.RUNNING)
 
-    # start transcoding
-    logging.info('Started transcoding \"%s\"', recording.get_title())
+    # start processing
+    logging.info('Started processing \"%s\"', recording.get_title())
     logging.info('Source recording file : %s', recording.path)
     logging.info('Destination video file: %s', vid_path)
-    res = Transcoder(recording, opts.preset, opts.preset_file, opts.timeout).transcode(vid_path)
+    transcoder = Transcoder(recording, opts.preset, opts.preset_file, opts.timeout)
+    if opts.mode.lower() == 'transcode':
+        res = transcoder.transcode(vid_path)
+    elif opts.mode.lower() == "copy":
+        res = transcoder.copy(vid_path)
+    else:
+        status.set_error(f'Unsupported processing mode: \"{args.mode}\"')
+        sys.exit(4)
+
     if status.get_cmd() == Job.STOP:
         status.set_status(Job.CANCELLED)
-        status.set_comment('Stopped transcoding')
-        Util.show_notification(f'Stopped transcoding \"{recording.get_title()}\"', 'warning')
-        sys.exit(4)
+        status.set_comment('Stopped processing')
+        Util.show_notification(f'Stopped processing \"{recording.get_title()}\"', 'warning')
+        sys.exit(5)
     elif res == 0:
         Util.add_video(recording.path, vid_path)
         Util.scan_videos()
     elif res != 0:
-        status.set_error(f'Failed transcoding (error {res})')
+        status.set_error(f'Failed processing (error {res})')
         Util.show_notification(
-            f'Failed transcoding \"{recording.get_title()}\" (error {res})', 'error'
+            f'Failed processing \"{recording.get_title()}\" (error {res})', 'error'
         )
         sys.exit(res)
 
@@ -1046,9 +1129,9 @@ def main():
     vid_size = Util.format_file_size(os.stat(vid_path).st_size)
     size_status = f'{rec_size} => {vid_size}'
     Util.show_notification(
-        f'Finished transcoding "{recording.get_title()}"\n{size_status}', 'normal'
+        f'Finished processing "{recording.get_title()}"\n{size_status}', 'normal'
     )
-    status.set_comment(f'Finished transcoding\n{size_status}')
+    status.set_comment(f'Finished processing\n{size_status}')
     status.set_status(Job.FINISHED)
 
     # .. the end
