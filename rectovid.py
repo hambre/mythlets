@@ -7,6 +7,7 @@ import sys
 import os
 import subprocess
 import logging
+import logging.handlers
 import math
 import urllib.parse
 import re
@@ -40,13 +41,14 @@ class Status:
     def set_error(msg):
         """ Set an error state to the myth job object """
         logging.error(msg)
-        Status.set_comment(msg)
+        Status.set_comment(msg, log=False)
         Status.set_status(Job.ERRORED)
 
     @staticmethod
-    def set_comment(msg):
+    def set_comment(msg, log=True):
         """ Sets a comment text to the myth job object """
-        logging.info(msg)
+        if log:
+            logging.info(msg)
         if Status._myth_job:
             Status._myth_job.setComment(msg)
 
@@ -148,11 +150,13 @@ class VideoFilePath:
     def __init__(self, recording):
         self.recording = recording
         self.storage_dir, self.video_dir = self._find_dir()
-        self.video_file = self._build_name()
-        self.path = os.path.join(os.path.join(self.storage_dir, self.video_dir), self.video_file)
+        self.path = None
+        if self.storage_dir:
+            self.video_file = self._build_name()
+            self.path = os.path.join(os.path.join(self.storage_dir, self.video_dir), self.video_file)
 
     def __str__(self):
-        return self.path
+        return self.path if self.path else ''
 
     def _find_dir(self):
         """ Builds the video file directory.
@@ -167,6 +171,8 @@ class VideoFilePath:
         matched_storage_dir = None
         max_free_space = 0
         max_space_storage_dir = None
+        rec_size = int(Util.get_file_size(self.recording.path) / 1000.0)
+        logging.debug("Recording %s -> size %s KiB", self.recording.path, rec_size)
         for storage_group in mbe.get_storage_group_data(group_name='Videos'):
             if storage_group['HostName'] != mbe.host_name:
                 continue
@@ -179,7 +185,11 @@ class VideoFilePath:
             # get avaliable space of storage group partition
             # and use storage group with max. available space
             free_space = int(storage_group['KiBFree'])
-            logging.debug('Storage group %s -> space %s', storage_dir, free_space)
+            logging.debug('Storage group %s -> space %s KiB', storage_dir, free_space)
+            # check if recording fits into storage group
+            if rec_size > free_space:
+                logging.warning('Recording size exceeds free space on storage group, skipping')
+                continue
             if free_space > max_free_space:
                 max_space_storage_dir = storage_dir
                 max_free_space = free_space
@@ -201,8 +211,10 @@ class VideoFilePath:
             logging.debug('Using storage dir matching title')
             return matched_storage_dir, os.path.relpath(matched_dir_name, matched_storage_dir)
         # return storage directory with max free space
-        logging.debug('Using storage dir with max. space')
-        return max_space_storage_dir, ''
+        if max_space_storage_dir:
+            logging.debug('Using storage dir with max. space')
+            return max_space_storage_dir, ''
+        return None, None
 
     def _build_name(self):
         """ Builds video file name: "The_title(_-_|_SxxEyy_][The_Subtitle].[mkv]" """
@@ -837,6 +849,11 @@ class Backend:
 class Util:
     """ Utility class """
     @staticmethod
+    def get_file_size(file_name):
+        """ Return size of specified file """
+        return os.stat(file_name).st_size
+
+    @staticmethod
     def format_file_size(num):
         """ Formats the given number as a file size """
         for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
@@ -1054,12 +1071,16 @@ def parse_arguments():
     if not isinstance(numeric_level, int):
         raise ValueError('Invalid log level: %s' % args.log_level)
 
+    formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
+    logger = logging.getLogger()
+    logger.setLevel(numeric_level)
+    log_handler = logging.StreamHandler()
+    log_handler.setFormatter(formatter)
+    logger.addHandler(log_handler)
     if args.log_file:
-        logging.basicConfig(filename=os.path.expanduser(args.log_file), level=numeric_level,
-                            format='%(asctime)s %(levelname)s: %(message)s')
-    else:
-        logging.basicConfig(level=numeric_level,
-                            format='%(asctime)s %(levelname)s: %(message)s')
+        log_handler = logging.handlers.RotatingFileHandler(os.path.expanduser(args.log_file), maxBytes=500*1024, backupCount=1)
+        log_handler.setFormatter(formatter)
+        logger.addHandler(log_handler)
 
     logging.debug('Options: %s', args)
 
@@ -1089,7 +1110,7 @@ def main():
     # build output file path
     vid_path = str(VideoFilePath(recording))
     if not vid_path:
-        status.set_error('Could not find video storage directory')
+        status.set_error('Could not find video storage directory or not enough free space available')
         sys.exit(2)
     if os.path.isfile(vid_path):
         status.set_error(f'Output video file already exists: \"{vid_path}\"')
@@ -1125,8 +1146,8 @@ def main():
         )
         sys.exit(res)
 
-    rec_size = Util.format_file_size(os.stat(recording.path).st_size)
-    vid_size = Util.format_file_size(os.stat(vid_path).st_size)
+    rec_size = Util.format_file_size(Util.get_file_size(recording.path))
+    vid_size = Util.format_file_size(Util.get_file_size(vid_path))
     size_status = f'{rec_size} => {vid_size}'
     Util.show_notification(
         f'Finished processing "{recording.get_title()}"\n{size_status}', 'normal'
