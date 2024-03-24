@@ -741,6 +741,7 @@ class Backend:
             result = self.mbe.send(
                 endpoint='Myth/GetHostName'
             )
+            logging.debug('Myth/GetHostName received: %s', result)
             self.host_name = result['String']
         except RuntimeError as error:
             logging.error('\nFatal error: "%s"', error)
@@ -760,6 +761,7 @@ class Backend:
             result = self.mbe.send(
                 endpoint='Myth/GetStorageGroupDirs', rest=data
             )
+            logging.debug('Myth/GetStorageGroupDirs received: %s', result)
             return result['StorageGroupDirList']['StorageGroupDirs']
         except RuntimeError as error:
             logging.error('\nFatal error: "%s"', error)
@@ -785,6 +787,7 @@ class Backend:
             result = self.mbe.send(
                 endpoint='Dvr/RecordedIdForPathname', rest=data
             )
+            logging.debug('Dvr/RecordedIdForPathname received: %s', result)
             return result['int']
         except RuntimeError as error:
             logging.error('\nFatal error: "%s"', error)
@@ -797,6 +800,7 @@ class Backend:
             result = self.mbe.send(
                 endpoint='Dvr/GetRecorded', rest=data
             )
+            logging.debug('Dvr/GetRecorded received: %s', result)
             return result['Program']
         except RuntimeError as error:
             logging.error('\nFatal error: "%s"', error)
@@ -809,6 +813,7 @@ class Backend:
             result = self.mbe.send(
                 endpoint='Dvr/GetRecordedCutList', rest=data
             )
+            logging.debug('Dvr/GetRecordedCutList received: %s', result)
             # create negated (uncut) list from cut list
             start = 0
             stop = 0
@@ -838,6 +843,7 @@ class Backend:
             result = self.mbe.send(
                 endpoint='Video/AddVideo', postdata=data, opts=self.post_opts
             )
+            logging.debug('Video/AddVideo received: %s', result)
             return result['bool']
         except RuntimeError as error:
             logging.error('\nFatal error: "%s"', error)
@@ -853,6 +859,7 @@ class Backend:
             result = self.mbe.send(
                 endpoint='Video/GetVideoByFileName', rest=data
             )
+            logging.debug('Video/GetVideoByFileName received: %s', result)
             return result['VideoMetadataInfo']['Id']
         except RuntimeError as error:
             logging.error('\nFatal error: "%s"', error)
@@ -865,6 +872,7 @@ class Backend:
             result = self.mbe.send(
                 endpoint='Video/GetVideo', rest=data
             )
+            logging.debug('Video/GetVideo received: %s', result)
             return result['VideoMetadataInfo']
         except RuntimeError as error:
             logging.error('\nFatal error: "%s"', error)
@@ -879,6 +887,7 @@ class Backend:
             result = self.mbe.send(
                 endpoint='Video/UpdateVideoMetadata', postdata=data, opts=self.post_opts
             )
+            logging.debug('Video/UpdateVideoMetadata received: %s', result)
             return result['bool']
         except RuntimeError as error:
             logging.error('\nFatal error: "%s"', error)
@@ -995,6 +1004,7 @@ class Util:
         if mbe.add_video(vid_file):
             logging.info('Successfully added video')
         else:
+            logging.error('Could not add video')
             return
 
         vid_id = mbe.get_video_id(vid_file)
