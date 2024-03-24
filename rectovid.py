@@ -177,7 +177,7 @@ class VideoFilePath:
         for storage_group in mbe.get_storage_group_data(group_name='Videos'):
             if storage_group['HostName'] != mbe.host_name:
                 continue
-            if storage_group['DirWrite'] != 'true':
+            if storage_group['DirWrite'] != True:
                 continue
             storage_dir = storage_group['DirName']
             # search given group
@@ -814,10 +814,10 @@ class Backend:
             stop = 0
             cuts = []
             for cut in result['CutList']['Cuttings']:
-                if cut['Mark'] == '1':  # start of cut
+                if int(cut['Mark']) == 1:  # start of cut
                     stop = int(cut['Offset'])
                     cuts.append((start, stop))
-                elif cut['Mark'] == '0':  # end of cut
+                elif int(cut['Mark']) == 0:  # end of cut
                     start = int(cut['Offset'])
                     stop = 9999999
             if stop == 9999999:
@@ -838,8 +838,7 @@ class Backend:
             result = self.mbe.send(
                 endpoint='Video/AddVideo', postdata=data, opts=self.post_opts
             )
-            if result['bool'] == 'true':
-                return True
+            return result['bool']
         except RuntimeError as error:
             logging.error('\nFatal error: "%s"', error)
         return False
@@ -880,8 +879,7 @@ class Backend:
             result = self.mbe.send(
                 endpoint='Video/UpdateVideoMetadata', postdata=data, opts=self.post_opts
             )
-            if result['bool'] == 'true':
-                return True
+            return result['bool']
         except RuntimeError as error:
             logging.error('\nFatal error: "%s"', error)
         return False
