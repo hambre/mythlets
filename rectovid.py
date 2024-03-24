@@ -384,7 +384,17 @@ class Transcoder:
 
         Status.init_progress()
 
-        res = self._copy_and_merge(dst_file, parts)
+        # workaround bug in mkvmerge producing an mkv file where the
+        # audio has a big offset after compile
+        # convert first into mkv file using ffmpeg, then split and merge
+        dst_dir, dst_name = os.path.split(dst_file)
+        tmp_file = os.path.join(dst_dir, "tmp_" + dst_name)
+        res = self._extract_part(tmp_file)
+        if res != 0:
+             Util.remove_file(tmp_file)
+             return res
+        res = self._copy_and_merge(tmp_file, dst_file, parts)
+        Util.remove_file(tmp_file)
 
         Status.reset_progress()
 
@@ -481,10 +491,12 @@ class Transcoder:
 
         return res
 
-    def _copy_and_merge(self, dst_file, parts):
+
+    def _copy_and_merge(self, src_file, dst_file, parts):
         # start the copying process
         args = []
         args.append('mkvmerge')
+        args.append('--verbose')
         args.append('-o')
         args.append(dst_file)
         split_spec = ''
@@ -495,7 +507,7 @@ class Transcoder:
             args.append('track')
             args.append('--split')
             args.append(split_spec)
-        args.append(self.recording.path)
+        args.append(src_file)
 
         logging.debug('Executing \"%s\"', ' '.join(args))
         proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
