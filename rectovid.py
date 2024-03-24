@@ -390,6 +390,68 @@ class Transcoder:
 
         return res
 
+
+    def extract(self, dst_file):
+        """ Copies streams of the source file to the destination file using ffmpeg
+            The cutlist of the recording (source file) is used to extract
+            multiple parts of the recording if neccessary and then merged into the final
+            destination file.
+        """
+        # obtain recording parts to extract
+        parts = self.recording.get_uncut_list()
+        if parts is None:
+            return 1
+
+        if parts:
+            logging.debug('Found %s parts: %s', len(parts), parts)
+
+        Status.init_progress()
+
+        if not parts:
+            # extract whole file directly
+            res = self._extract_part(dst_file)
+        elif len(parts) == 1:
+            # extract single part directly
+            res = self._extract_part(dst_file, parts[0])
+        else:
+            # extract each part on its own
+            res = self._extract_multiple(dst_file, parts)
+
+        Status.reset_progress()
+
+        return res
+
+
+    def _extract_multiple(self, dst_file, parts):
+        # initialize progress ranges
+        for part in parts:
+            Status.add_subprogress(part[1]-part[0])
+
+        # transcode each part on its own
+        part_number = 1
+        tmp_files = []
+        dst_file_base_name, dst_file_ext = os.path.splitext(dst_file)
+        for part in parts:
+            dst_file_part = f'{dst_file_base_name}_part_{part_number}{dst_file_ext}'
+            logging.info('Processing part %s/%s to %s', part_number, len(parts), dst_file_part)
+            res = self._extract_part(dst_file_part, part)
+            if res != 0:
+                break
+            part_number += 1
+            tmp_files.append(dst_file_part)
+            Status.next_subprogress()
+
+        # merge transcoded parts
+        if len(parts) == len(tmp_files):
+            res = self._merge_parts(tmp_files, dst_file)
+
+        # delete transcoded parts
+        for tmp_file in tmp_files:
+            Util.remove_file(tmp_file)
+
+        return res
+
+
     def _transcode_multiple(self, dst_file, parts):
         # initialize progress ranges
         for part in parts:
@@ -552,10 +614,11 @@ class Transcoder:
 
         return proc.returncode
 
-    def _copy_part(self, dst_file, frames=None):
-        """ Use ffmpeg to copy video part (deprecated) """
-        fps = self.recording.get_video_fps()
-        logging.debug('Using %s fps', fps)
+    def _extract_part(self, dst_file, frames=None):
+        """ Use ffmpeg to copy video part. """
+        if frames:
+            fps = self.recording.get_video_fps()
+            logging.debug('Using %s fps', fps)
 
         frame_count = float(frames[1]-frames[0]) if frames else 0
 
@@ -1075,7 +1138,7 @@ def parse_arguments():
     config = configparser.ConfigParser()
     config.read(os.path.expanduser(args.cfg_file))
     if not args.mode:
-        args.mode = config.getint('General', 'Mode', fallback='copy')
+        args.mode = config.get('General', 'Mode', fallback='copy')
     if not args.timeout:
         args.timeout = config.getint('General', 'Timeout', fallback=300)
     if not args.preset:
@@ -1148,6 +1211,8 @@ def main():
         res = transcoder.transcode(vid_path)
     elif opts.mode.lower() == "copy":
         res = transcoder.copy(vid_path)
+    elif opts.mode.lower() == "extract":
+        res = transcoder.extract(vid_path)
     else:
         status.set_error(f'Unsupported processing mode: \"{args.mode}\"')
         sys.exit(4)
