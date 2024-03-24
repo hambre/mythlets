@@ -14,6 +14,7 @@ import re
 import json
 import time
 import configparser
+import shlex
 from threading import Timer
 from MythTV import Job
 from MythTV.services_api import send as api
@@ -1027,6 +1028,24 @@ class Util:
             logging.debug('Removing file %s', filename)
             os.remove(filename)
 
+    @staticmethod
+    def post_process(cmd, rec_path, vid_path):
+        Status().set_comment('Post-Processing')
+        cmd = cmd.replace('%VIDPATH%', vid_path)
+        cmd = cmd.replace('%RECPATH%', rec_path)
+        cmd = cmd.replace('%VIDFILE%', os.path.basename(vid_path))
+        cmd = cmd.replace('%RECFILE%', os.path.basename(rec_path))
+        args = shlex.split(cmd)
+        try:
+            logging.debug("Executing post-processing command: %s", args)
+            proc = subprocess.run(args, capture_output=True, check=True, shell=False)
+            logging.debug("Output:\n%s", proc.stdout.decode('utf-8').strip())
+            logging.info("Exit code: %d", proc.returncode)
+        except subprocess.CalledProcessError as error:
+            logging.error(error.stderr.decode('utf-8'))
+        except Exception as error:
+            logging.error(error)
+
 
 def parse_arguments():
     """ Parses command line arguments """
@@ -1045,6 +1064,7 @@ def parse_arguments():
                         help='Handbrake transcoding preset file to read from')
     parser.add_argument('--timeout', dest='timeout', type=int,
                         help='timeout in seconds to abort processing')
+    parser.add_argument('--post-process', dest='post_command', help='post processing command')
     parser.add_argument('-l', '--logfile', dest='log_file', help='optional log file location, enables logging to file')
     parser.add_argument('--loglevel', dest='log_level',
                         help='optional log level (supported: debug, info, warning, error, critical; default: info)')
@@ -1066,7 +1086,8 @@ def parse_arguments():
         args.log_file = config.get('Logging', 'LogFile', fallback=None)
     if not args.log_level:
         args.log_level = config.get('Logging', 'LogLevel', fallback='info')
-
+    if not args.post_command:
+        args.post_command = config.get('Postprocessing', 'Command', fallback='')
     numeric_level = getattr(logging, args.log_level.upper(), None)
     if not isinstance(numeric_level, int):
         raise ValueError('Invalid log level: %s' % args.log_level)
@@ -1145,6 +1166,9 @@ def main():
             f'Failed processing \"{recording.get_title()}\" (error {res})', 'error'
         )
         sys.exit(res)
+
+    if opts.post_command:
+        Util.post_process(opts.post_command, recording.path, vid_path)
 
     rec_size = Util.format_file_size(Util.get_file_size(recording.path))
     vid_size = Util.format_file_size(Util.get_file_size(vid_path))
