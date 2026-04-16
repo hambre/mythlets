@@ -34,6 +34,19 @@ This script can be set as a user job and can then be triggered from MythFrontend
                             optional log file location, enables logging to file
     --loglevel LOG_LEVEL  optional log level (supported: debug, info, warning, error, critical; default: info)
 
+## time_since_last_boot.sh
+
+Small script to print the time sine the last boot of the system.
+
+    Usage: ./time_since_last_boot.sh [-s] [-m]
+
+    Print time since last boot
+
+    Options:
+        -s  Print seconds sind last boot to stdout
+        -m  Print minutes sind last boot to stdout
+        -h  Print this help
+
 ## parsecppcheck.py
 Parses dumpfile of cppcheck
 

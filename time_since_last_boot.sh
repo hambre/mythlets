@@ -1,9 +1,9 @@
 #!/bin/bash
 
 usage() {
-    echo "Print time since last boot"
-    echo ""
     echo "Usage: $0 [-s] [-m]"
+    echo ""
+    echo "Print time since last boot"
     echo ""
     echo "Options:"
     echo "  -s  Print seconds sind last boot to stdout"
