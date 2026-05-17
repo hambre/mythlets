@@ -16,8 +16,10 @@ import time
 import configparser
 import shlex
 from threading import Timer
-from MythTV import Job
+from MythTV import Job, JOBSTATUS, JOBCMD
 from MythTV.services_api import send as api
+from typing import Any, Dict, List, Optional, Tuple
+
 
 sys.path.append("/usr/bin")
 
@@ -25,13 +27,13 @@ sys.path.append("/usr/bin")
 class Status:
     """ Manages status reporting """
     _myth_job = None
-    _myth_job_id = 0
-    _subprogresses = []
-    _cur_subprogress = 0
+    _myth_job_id : int = 0
+    _subprogresses : List[Dict[str, float]] = []
+    _cur_subprogress : int = 0
     _progress_start = None
     _last_progress = None
 
-    def __init__(self, job_id=0):
+    def __init__(self, job_id : int = 0):
         if job_id and not Status._myth_job:
             Status._myth_job_id = job_id
             Status._myth_job = Job(job_id)
@@ -39,14 +41,14 @@ class Status:
             self.set_comment('Starting job...')
 
     @staticmethod
-    def set_error(msg):
+    def set_error(msg:str) -> None:
         """ Set an error state to the myth job object """
         logging.error(msg)
         Status.set_comment(msg, log=False)
         Status.set_status(Job.ERRORED)
 
     @staticmethod
-    def set_comment(msg, log=True):
+    def set_comment(msg:str, log:bool=True) -> None:
         """ Sets a comment text to the myth job object """
         if log:
             logging.info(msg)
@@ -54,7 +56,7 @@ class Status:
             Status._myth_job.setComment(msg)
 
     @staticmethod
-    def add_subprogress(duration):
+    def add_subprogress(duration : float) -> None:
         """ Adds a subprogress """
         Status._subprogresses.append({'Duration': duration, 'Start': 0, 'End': 0})
         total_duration = 0.0
@@ -67,13 +69,13 @@ class Status:
             sub['End'] = current_duration / total_duration
 
     @staticmethod
-    def next_subprogress():
+    def next_subprogress() -> None:
         """ Switches to next subprogress """
         if Status._subprogresses:
             Status._cur_subprogress += 1
 
     @staticmethod
-    def reset_progress():
+    def reset_progress() -> None:
         """ Clears subprogress list and resets start time """
         Status._subprogresses = []
         Status._cur_subprogress = 0
@@ -81,13 +83,13 @@ class Status:
         Status._last_progress = None
 
     @staticmethod
-    def init_progress():
+    def init_progress() -> None:
         """ Initializes progress start time """
         Status._progress_start = time.time()
         logging.debug(Status._subprogresses)
 
     @staticmethod
-    def set_progress(progress):
+    def set_progress(progress:Optional[float]) -> None:
         """ Sets progress as a comment to the myth job object """
         if not progress:
             return
@@ -112,21 +114,21 @@ class Status:
                 Status._myth_job.setComment(f'Progress: {int(progress)} %')
 
     @staticmethod
-    def set_status(new_status):
+    def set_status(new_status:JOBSTATUS) -> None:
         """ Sets a state to the myth job object """
         if Status._myth_job:
             logging.debug('Setting job status to %s', new_status)
             Status._myth_job.setStatus(new_status)
 
     @staticmethod
-    def get_status():
+    def get_status() -> JOBSTATUS:
         """ Gets state of the myth job object """
         if Status._myth_job:
             return Status._myth_job.status
         return Job.UNKNOWN
 
     @staticmethod
-    def get_cmd():
+    def get_cmd() -> JOBCMD:
         """ Reads the current myth job state from the database """
         if Status._myth_job_id == 0:
             return Job.UNKNOWN
@@ -134,32 +136,99 @@ class Status:
         return Job(Status._myth_job_id).cmds
 
     @staticmethod
-    def canceled():
+    def canceled() -> bool:
         """ Checks if myth job object has been stopped/canceled """
-        return Status.get_cmd() == Job.STOP or Status.get_status() == Job.CANCELLED
+        return True if Status.get_cmd() == Job.STOP or Status.get_status() == Job.CANCELLED else False
 
     @staticmethod
-    def failed():
+    def failed() -> bool:
         """ Checks if myth job object has error state """
-        return Status.get_status() == Job.ERRORED
+        return True if Status.get_status() == Job.ERRORED else False
+
+
+class Recording:
+    """ Handles recording data """
+    def __init__(self, rec_path:str):
+        self.path:str = rec_path
+        # first determine video stream of recording
+        streams = Util.get_video_streams(self.path)
+        self.video_stream:Dict[str, Any] = {}
+        for stream in streams:
+            if 'codec_type' in stream and stream['codec_type'] == 'video':
+                self.video_stream = stream
+                break
+        self.metadata:Any = {}
+
+    def get_video_codec(self) -> str:
+        """ Return video stream codec name """
+        return str(self.video_stream.get('codec_name'))
+
+    def get_video_fps(self) -> float:
+        """ Return video stream FPS """
+        return float(self.video_stream['r_frame_rate'].split('/')[0])
+
+    def get_uncut_list(self) -> Optional[List[Tuple[int, int]]]:
+        """ Returns uncut parts of the recording """
+        mbe = Backend()
+        rec_id = mbe.get_recording_id(self.path)
+        if rec_id is None:
+            return None
+        return mbe.get_recording_uncutlist(rec_id)
+
+    def _get_metadata(self) -> bool:
+        if not self.metadata:
+            mbe = Backend()
+            rec_id = mbe.get_recording_id(self.path)
+            if rec_id is None:
+                return False
+            self.metadata = mbe.get_recording_metadata(rec_id)
+
+        return bool(self.metadata)
+
+    def get_title(self) -> str:
+        """ Returns recording title """
+        if self._get_metadata() and self.metadata:
+            return str(self.metadata.get('Title'))
+        return ''
+
+    def get_subtitle(self) -> str:
+        """ Returns recording subtitle """
+        if self._get_metadata() and self.metadata:
+            return str(self.metadata.get('SubTitle'))
+        return ''
+
+    def get_season(self) -> int:
+        """ Returns recording season """
+        if self._get_metadata() and self.metadata:
+            return int(self.metadata.get('Season', 0))
+        return 0
+
+    def get_episode(self) -> int:
+        """ Returns recording episode """
+        if self._get_metadata() and self.metadata:
+            return int(self.metadata.get('Episode', 0))
+        return 0
 
 
 class VideoFilePath:
     """ Build video file name from title, subtitle and season metadata
         Also finds best matching storage group from different criteria.
     """
-    def __init__(self, recording):
+    def __init__(self, recording:Recording):
         self.recording = recording
         self.storage_dir, self.video_dir = self._find_dir()
         self.path = None
         if self.storage_dir:
             self.video_file = self._build_name()
-            self.path = os.path.join(os.path.join(self.storage_dir, self.video_dir), self.video_file)
+            if self.video_dir:
+                self.path = os.path.join(self.storage_dir, self.video_dir, self.video_file)
+            else:
+                self.path = os.path.join(self.storage_dir, self.video_file)
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.path if self.path else ''
 
-    def _find_dir(self):
+    def _find_dir(self) -> Tuple[Optional[str], Optional[str]]:
         """ Builds the video file directory.
             It scans all video storage dirs to find the best
             one using the following criteria by ascending priority:
@@ -169,12 +238,17 @@ class VideoFilePath:
         """
         mbe = Backend()
         matched_dir_name = None
-        matched_storage_dir = None
+        matched_storage_dir:Optional[str] = None
         max_free_space = 0
         max_space_storage_dir = None
         rec_size = int(Util.get_file_size(self.recording.path) / 1000.0)
         logging.debug("Recording %s -> size %s KiB", self.recording.path, rec_size)
-        for storage_group in mbe.get_storage_group_data(group_name='Videos'):
+        storage_groups = mbe.get_storage_group_data(group_name='Videos')
+        if not storage_groups:
+            return None, None
+        for storage_group in storage_groups:
+            if storage_group is None:
+                continue
             if storage_group['HostName'] != mbe.host_name:
                 continue
             if storage_group['DirWrite'] != True:
@@ -217,128 +291,64 @@ class VideoFilePath:
             return max_space_storage_dir, ''
         return None, None
 
-    def _build_name(self):
+    def _build_name(self) -> str:
         """ Builds video file name: "The_title(_-_|_SxxEyy_][The_Subtitle].[mkv]" """
-        parts = []
+        name_parts:List[str] = []
         title = self.recording.get_title()
         subtitle = self.recording.get_subtitle()
         season = self.recording.get_season()
         episode = self.recording.get_episode()
         if title and title != '':
-            parts.append(title)
+            name_parts.append(title)
         if season > 0 and episode > 0:
-            parts.append(f'S{season:02}E{episode:02}')
+            name_parts.append(f'S{season:02}E{episode:02}')
         elif subtitle and subtitle != "":
-            parts.append('-')
+            name_parts.append('-')
         if subtitle and subtitle != "":
-            parts.append(subtitle)
-        name = "_".join(' '.join(parts).split()) + '.mkv'
+            name_parts.append(subtitle)
+        name = "_".join(' '.join(name_parts).split()) + '.mkv'
         for char in ('\''):
             name = name.replace(char, '')
         return name
 
-    def _match_title(self, name):
+    def _match_title(self, name:str) -> bool:
         """ Checks if file or directory name starts with specified title """
-        simplified_title = self.recording.get_title().lower()
-        simplified_name = name.lower()
+        simplified_title:str = self.recording.get_title().lower()
+        simplified_name:str = name.lower()
         for char in (' ', '_', '-'):
             simplified_name = simplified_name.replace(char, '')
             simplified_title = simplified_title.replace(char, '')
         return simplified_name.startswith(simplified_title)
 
 
-class Recording:
-    """ Handles recording data """
-    def __init__(self, rec_path):
-        self.path = rec_path
-        # first determine video stream of recording
-        streams = Util.get_video_streams(self.path)
-        self.video_stream = None
-        for stream in streams:
-            if 'codec_type' in stream and stream['codec_type'] == 'video':
-                self.video_stream = stream
-                break
-        self.metadata = None
-
-    def get_video_codec(self):
-        """ Return video stream codec name """
-        return self.video_stream['codec_name']
-
-    def get_video_fps(self):
-        """ Return video stream FPS """
-        return float(self.video_stream['r_frame_rate'].split('/')[0])
-
-    def get_uncut_list(self):
-        """ Returns uncut parts of the recording """
-        mbe = Backend()
-        rec_id = mbe.get_recording_id(self.path)
-        if rec_id is None:
-            return None
-        return mbe.get_recording_uncutlist(rec_id)
-
-    def _get_metadata(self):
-        if not self.metadata:
-            mbe = Backend()
-            rec_id = mbe.get_recording_id(self.path)
-            if rec_id is None:
-                return False
-            self.metadata = mbe.get_recording_metadata(rec_id)
-
-        return self.metadata is not None
-
-    def get_title(self):
-        """ Returns recording title """
-        if self._get_metadata():
-            return self.metadata['Title']
-        return ''
-
-    def get_subtitle(self):
-        """ Returns recording subtitle """
-        if self._get_metadata():
-            return self.metadata['SubTitle']
-        return ''
-
-    def get_season(self):
-        """ Returns recording season """
-        if self._get_metadata():
-            return int(self.metadata['Season'])
-        return 0
-
-    def get_episode(self):
-        """ Returns recording episode """
-        if self._get_metadata():
-            return int(self.metadata['Episode'])
-        return 0
-
-
 class Transcoder:
     """ Handles transcoding a recording to a video file """
-    def __init__(self, recording, preset, preset_file, timeout):
-        self.timer = None
-        self.recording = recording
-        self.preset = preset
-        self.preset_file = preset_file
-        self.timeout = timeout
+    def __init__(self, recording:Recording, preset:str, preset_file:str, timeout:int) -> None:
+        self.timer:Optional[Timer] = None
+        self.recording:Recording = recording
+        self.preset:str = preset
+        self.preset_file:str = preset_file
+        self.timeout:int = timeout
 
     @staticmethod
-    def _abort(process):
+    def _abort(process:subprocess.Popen[str]) -> None:
         """ Abort transcoding after timeout """
         Status.set_error('Aborting transcode due to timeout')
         process.kill()
 
-    def _start_timer(self, process):
+    def _start_timer(self, process:subprocess.Popen[str]) -> None:
         """ Start timer to abort transcode process if it hangs """
         self._stop_timer()
         self.timer = Timer(self.timeout, self._abort, [process])
         self.timer.start()
 
-    def _stop_timer(self):
+    def _stop_timer(self) -> None:
         """ Stop the abort transcoding timer """
         if self.timer is not None:
             self.timer.cancel()
         self.timer = None
 
-    def transcode(self, dst_file):
+    def transcode(self, dst_file:str) -> int:
         """ Transcode the source file to the destination file using the specified preset
             The cutlist of the recording (source file) is used to transcode
             multiple parts of the recording if neccessary and then merged into the final
@@ -368,7 +378,7 @@ class Transcoder:
 
         return res
 
-    def copy(self, dst_file):
+    def copy(self, dst_file:str) -> int:
         """ Copies streams of the source file to the destination file using mkvmerge
             The cutlist of the recording (source file) is used to copy
             multiple parts of the recording if neccessary and then merged into the final
@@ -401,14 +411,14 @@ class Transcoder:
         return res
 
 
-    def extract(self, dst_file):
+    def extract(self, dst_file:str) -> int:
         """ Copies streams of the source file to the destination file using ffmpeg
             The cutlist of the recording (source file) is used to extract
             multiple parts of the recording if neccessary and then merged into the final
             destination file.
         """
         # obtain recording parts to extract
-        parts = self.recording.get_uncut_list()
+        parts:Optional[List[Tuple[int, int]]] = self.recording.get_uncut_list()
         if parts is None:
             return 1
 
@@ -432,14 +442,14 @@ class Transcoder:
         return res
 
 
-    def _extract_multiple(self, dst_file, parts):
+    def _extract_multiple(self, dst_file:str, parts:List[Tuple[int, int]]) -> int:
         # initialize progress ranges
         for part in parts:
             Status.add_subprogress(part[1]-part[0])
 
         # transcode each part on its own
         part_number = 1
-        tmp_files = []
+        tmp_files:List[str] = []
         dst_file_base_name, dst_file_ext = os.path.splitext(dst_file)
         for part in parts:
             dst_file_part = f'{dst_file_base_name}_part_{part_number}{dst_file_ext}'
@@ -462,14 +472,14 @@ class Transcoder:
         return res
 
 
-    def _transcode_multiple(self, dst_file, parts):
+    def _transcode_multiple(self, dst_file:str, parts:List[Tuple[int, int]]) -> int:
         # initialize progress ranges
         for part in parts:
             Status.add_subprogress(part[1]-part[0])
 
         # transcode each part on its own
-        part_number = 1
-        tmp_files = []
+        part_number:int = 1
+        tmp_files:List[str] = []
         dst_file_base_name, dst_file_ext = os.path.splitext(dst_file)
         for part in parts:
             dst_file_part = f'{dst_file_base_name}_part_{part_number}{dst_file_ext}'
@@ -492,7 +502,7 @@ class Transcoder:
         return res
 
 
-    def _copy_and_merge(self, src_file, dst_file, parts):
+    def _copy_and_merge(self, src_file:str, dst_file:str, parts:List[Tuple[int, int]]) -> int:
         # start the copying process
         args = []
         args.append('mkvmerge')
@@ -518,7 +528,7 @@ class Transcoder:
         # regex pattern to find prograss and ETA in output line
         pattern = re.compile(r"^Progress:([ ]*[\d]*)")
 
-        while True:
+        while proc.stdout:
             line = proc.stdout.readline()
             if line == '' and proc.poll() is not None:
                 break  # Aborted, no characters available, process died.
@@ -545,7 +555,8 @@ class Transcoder:
         # remove video file on failure
         if proc.wait() == 2 or Status.canceled() or Status.failed():
             # print transcoding error output
-            logging.error(proc.stderr.read())
+            if proc.stderr:
+                logging.error(proc.stderr.read())
             Util.remove_file(dst_file)
 
         self._stop_timer()
@@ -557,7 +568,7 @@ class Transcoder:
 
         return proc.returncode
 
-    def _transcode_part(self, dst_file, frames=None):
+    def _transcode_part(self, dst_file:str, frames:Optional[Tuple[int, int]]=None) -> int:
         """ Start HandBrake to transcodes all or a single part (identified by
             start and end frame) of the source file
             A timer is used to abort the transcoding if there was no progress
@@ -565,7 +576,7 @@ class Transcoder:
         """
 
         # start the transcoding process
-        args = []
+        args:List[str] = []
         args.append('HandBrakeCLI')
         if self.preset_file:
             args.append('--presetfile')
@@ -592,10 +603,10 @@ class Transcoder:
         # start timer to abort transcode process if it hangs
         self._start_timer(proc)
 
-        # regex pattern to find prograss and ETA in output line
+        # regex pattern to find progress and ETA in output line
         pattern = re.compile(r"([\d]*\.[\d]*)(?=\s\%.*fps)")
 
-        while True:
+        while proc.stdout:
             line = proc.stdout.readline()
             if line == '' and proc.poll() is not None:
                 break  # Aborted, no characters available, process died.
@@ -619,14 +630,15 @@ class Transcoder:
         # remove video file on failure
         if proc.wait() != 0 or Status.canceled() or Status.failed():
             # print transcoding error output
-            logging.error(proc.stderr.read())
+            if proc.stderr:
+                logging.error(proc.stderr.read())
             Util.remove_file(dst_file)
 
         self._stop_timer()
 
         return proc.returncode
 
-    def _extract_part(self, dst_file, frames=None):
+    def _extract_part(self, dst_file:str, frames:Optional[Tuple[int, int]]=None) -> int:
         """ Use ffmpeg to copy video part. """
         if frames:
             fps = self.recording.get_video_fps()
@@ -677,10 +689,10 @@ class Transcoder:
         # start timer to abort transcode process if it hangs
         self._start_timer(proc)
 
-        # regex pattern to find prograss and ETA in output line
+        # regex pattern to find frame progress in output line
         pattern = re.compile(r"^frame=([ ]*[\d]*)")
 
-        while True:
+        while proc.stderr:
             line = proc.stderr.readline()
             if line == '' and proc.poll() is not None:
                 break  # Aborted, no characters available, process died.
@@ -688,15 +700,16 @@ class Transcoder:
                 # new line, restart abort timer
                 self._start_timer(proc)
 
-                progress = None
-                try:
-                    if matched := re.search(pattern, line):
-                        frame = float(matched.group(1))
-                        progress = 100.0 * frame / frame_count
-                except IndexError:
-                    pass
-                else:
-                    Status.set_progress(progress)
+                if frame_count:
+                    progress:Optional[float] = None
+                    try:
+                        if matched := re.search(pattern, line):
+                            frame = float(matched.group(1))
+                            progress = 100.0 * frame / frame_count
+                    except IndexError:
+                        pass
+                    else:
+                        Status.set_progress(progress)
                 # check if job was stopped externally
                 if Status.canceled():
                     proc.kill()
@@ -705,7 +718,8 @@ class Transcoder:
         # remove video file on failure
         if proc.wait() != 0 or Status.canceled() or Status.failed():
             # print transcoding error output
-            logging.error(proc.stderr.read())
+            if proc.stderr:
+                logging.error(proc.stderr.read())
             Util.remove_file(dst_file)
 
         self._stop_timer()
@@ -713,7 +727,7 @@ class Transcoder:
         return proc.returncode
 
     @staticmethod
-    def _merge_parts(parts, dst_file):
+    def _merge_parts(parts:List[str], dst_file:str) -> int:
         logging.debug('Merging transcoded parts %s', parts)
         list_file = f'{os.path.splitext(dst_file)[0]}_partlist.txt'
         with open(list_file, "w") as text_file:
@@ -747,7 +761,7 @@ class Transcoder:
 
 class Backend:
     """ Handles sending and receiving data to/from the Mythtv backend """
-    def __init__(self, debug=None):
+    def __init__(self, debug:Optional[bool]=None):
         try:
             self.mbe = api.Send(host='localhost')
             result = self.mbe.send(
@@ -763,7 +777,7 @@ class Backend:
         elif logging.getLogger().getEffectiveLevel() == logging.DEBUG:
             self.post_opts['debug'] = True
 
-    def get_storage_group_data(self, group_name=None):
+    def get_storage_group_data(self, group_name:Optional[str]=None) -> Optional[Any]:
         """ Retrieve storage group data from backend """
         if group_name:
             data = f'HostName={self.host_name}&GroupName={group_name}'
@@ -779,20 +793,20 @@ class Backend:
             logging.error('\nFatal error: "%s"', error)
             return None
 
-    def get_storage_dirs(self, group_name=None, host_name=None, writable=None):
+    def get_storage_dirs(self, group_name:Optional[str]=None, host_name:Optional[str]=None, writable:Optional[bool]=None) -> List[str]:
         """ Returns list of storage group directories """
         storage_groups = self.get_storage_group_data(group_name)
         if not storage_groups:
             return []
         dirs = []
         for sg_data in storage_groups:
-            if writable and sg_data["DirWrite"] != 'true':
+            if writable and sg_data['DirWrite']:
                 continue
             if not host_name or sg_data['HostName'] == host_name:
                 dirs.append(sg_data['DirName'])
         return dirs
 
-    def get_recording_id(self, rec_path):
+    def get_recording_id(self, rec_path:str) -> Optional[int]:
         """ Retrieves recording id of specified recording file """
         try:
             data = f'Pathname={urllib.parse.quote(rec_path)}'
@@ -800,12 +814,12 @@ class Backend:
                 endpoint='Dvr/RecordedIdForPathname', rest=data
             )
             logging.debug('Dvr/RecordedIdForPathname received: %s', result)
-            return result['int']
+            return int(result['int'])
         except RuntimeError as error:
             logging.error('\nFatal error: "%s"', error)
         return None
 
-    def get_recording_metadata(self, rec_id):
+    def get_recording_metadata(self, rec_id:int) -> Optional[Any]:
         """ Retrieves metadata of the specified recording """
         try:
             data = f'RecordedId={rec_id}'
@@ -818,7 +832,7 @@ class Backend:
             logging.error('\nFatal error: "%s"', error)
         return None
 
-    def get_recording_uncutlist(self, rec_id):
+    def get_recording_uncutlist(self, rec_id:int) -> Optional[List[Tuple[int, int]]]:
         """ Retrives cutlist of specified recording """
         try:
             data = f'RecordedId={rec_id}&OffsetType=Frames'
@@ -827,9 +841,9 @@ class Backend:
             )
             logging.debug('Dvr/GetRecordedCutList received: %s', result)
             # create negated (uncut) list from cut list
-            start = 0
-            stop = 0
-            cuts = []
+            start : int = 0
+            stop : int = 0
+            cuts : List[Tuple[int, int]] = []
             for cut in result['CutList']['Cuttings']:
                 if int(cut['Mark']) == 1:  # start of cut
                     stop = int(cut['Offset'])
@@ -844,7 +858,7 @@ class Backend:
             logging.error('\nFatal error: "%s"', error)
         return None
 
-    def add_video(self, vid_path):
+    def add_video(self, vid_path:str) -> bool:
         """ Adds specified video to the database
             The path must be an absolute path.
         """
@@ -856,12 +870,12 @@ class Backend:
                 endpoint='Video/AddVideo', postdata=data, opts=self.post_opts
             )
             logging.debug('Video/AddVideo received: %s', result)
-            return result['bool']
+            return True if result['bool'] else False
         except RuntimeError as error:
             logging.error('\nFatal error: "%s"', error)
         return False
 
-    def get_video_id(self, vid_file):
+    def get_video_id(self, vid_file:str) -> Optional[str]:
         """ Retrieves the video id of the specified video file
             The video file must be relative to one of the video
             storage dirs.
@@ -872,12 +886,12 @@ class Backend:
                 endpoint='Video/GetVideoByFileName', rest=data
             )
             logging.debug('Video/GetVideoByFileName received: %s', result)
-            return result['VideoMetadataInfo']['Id']
+            return str(result['VideoMetadataInfo']['Id'])
         except RuntimeError as error:
             logging.error('\nFatal error: "%s"', error)
         return None
 
-    def get_video_metadata(self, vid_id):
+    def get_video_metadata(self, vid_id:str) -> Any:
         """ Retrieves the metadata of the specified video file """
         try:
             data = f'Id={vid_id}'
@@ -890,7 +904,7 @@ class Backend:
             logging.error('\nFatal error: "%s"', error)
         return None
 
-    def update_video_metadata(self, vid_id, data):
+    def update_video_metadata(self, vid_id:str, data:Dict[str, Any]) -> bool:
         """ Updates metadata of the specified video """
         try:
             if not data:
@@ -900,12 +914,12 @@ class Backend:
                 endpoint='Video/UpdateVideoMetadata', postdata=data, opts=self.post_opts
             )
             logging.debug('Video/UpdateVideoMetadata received: %s', result)
-            return result['bool']
+            return True if result['bool'] else False
         except RuntimeError as error:
             logging.error('\nFatal error: "%s"', error)
         return False
 
-    def show_notification(self, msg, msg_type):
+    def show_notification(self, msg:str, msg_type:str) -> None:
         """ Displays a visual notification on active frontends """
         try:
             data = {
@@ -932,12 +946,12 @@ class Backend:
 class Util:
     """ Utility class """
     @staticmethod
-    def get_file_size(file_name):
+    def get_file_size(file_name:str) -> int:
         """ Return size of specified file """
         return os.stat(file_name).st_size
 
     @staticmethod
-    def format_file_size(num):
+    def format_file_size(num:float) -> str:
         """ Formats the given number as a file size """
         for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
             if abs(num) < 1000.0:
@@ -946,13 +960,13 @@ class Util:
         return "%.1f %s" % (num, 'PB')
 
     @staticmethod
-    def get_free_space(file_name):
+    def get_free_space(file_name:str) -> int:
         """ Returns the free space of the partition of the specified file/directory """
         stats = os.statvfs(file_name)
         return stats.f_bfree * stats.f_frsize
 
     @staticmethod
-    def get_video_streams(filename):
+    def get_video_streams(filename:str) -> Any:
         """ Determines all streams of the video file using ffprobe
             Returns list of streams.
         """
@@ -976,7 +990,7 @@ class Util:
             return {}
 
     @staticmethod
-    def get_video_length(filename):
+    def get_video_length(filename:str) -> int:
         """ Determines the video length using ffprobe
             Returns the video length in minutes.
         """
@@ -998,19 +1012,21 @@ class Util:
         return 0
 
     @staticmethod
-    def add_video(rec_path, vid_path):
+    def add_video(rec_path:str, vid_path:str) -> None:
         """ Adds the video to the database and copies recording metadata """
         Status().set_comment('Adding video to database')
 
         mbe = Backend()
 
         # find video path relative to storage dir
-        vid_file = None
+        vid_file:str = ''
         for sg_path in mbe.get_storage_dirs('Videos'):
             if vid_path.startswith(sg_path):
                 vid_file = vid_path[len(sg_path):]
                 logging.debug('Found video in storage group %s -> %s', sg_path, vid_file)
                 break
+        if not vid_file:
+            logging.error('Could not find video in storage groups')
 
         # add video to database
         if mbe.add_video(vid_file):
@@ -1021,10 +1037,16 @@ class Util:
 
         vid_id = mbe.get_video_id(vid_file)
         logging.debug('Got video id %s', vid_id)
+        if vid_id is None:
+            return
         rec_id = mbe.get_recording_id(rec_path)
         logging.debug('Got recording id %s', rec_id)
+        if rec_id is None:
+            return
 
         rec_data = mbe.get_recording_metadata(rec_id)
+        if not rec_data:
+            return
 
         # collect metadata
         director = []
@@ -1044,7 +1066,7 @@ class Util:
                 fanart = os.path.split(artwork['FileName'])[1]
 
         # update video metadata
-        data = {}
+        data:Dict[str, Any] = {}
         if 'Description' in rec_data:
             data['Plot'] = rec_data['Description']
         if 'Category' in rec_data:
@@ -1068,7 +1090,7 @@ class Util:
             logging.info('Successfully updated video metadata')
 
     @staticmethod
-    def scan_videos():
+    def scan_videos() -> None:
         """ Triggers a video scan using mythutil """
         Status().set_comment('Triggering video rescan')
         args = []
@@ -1080,7 +1102,7 @@ class Util:
             logging.error(error.stderr)
 
     @staticmethod
-    def show_notification(msg, msg_type):
+    def show_notification(msg:str, msg_type:str) -> None:
         """ Displays a visual notification on active frontends """
         args = []
         args.append('mythutil')
@@ -1105,14 +1127,14 @@ class Util:
             logging.info(msg)
 
     @staticmethod
-    def remove_file(filename):
+    def remove_file(filename:str) -> None:
         """ Safely removes specified file """
         if os.path.isfile(filename):
             logging.debug('Removing file %s', filename)
             os.remove(filename)
 
     @staticmethod
-    def post_process(cmd, rec_path, vid_path):
+    def post_process(cmd:str, rec_path:str, vid_path:str) -> None:
         Status().set_comment('Post-Processing')
         cmd = cmd.replace('%VIDPATH%', vid_path)
         cmd = cmd.replace('%RECPATH%', rec_path)
@@ -1130,7 +1152,7 @@ class Util:
             logging.error(error)
 
 
-def parse_arguments():
+def parse_arguments() -> argparse.Namespace:
     """ Parses command line arguments """
     parser = argparse.ArgumentParser(description='Convert recording and move it to video storage')
     parser.add_argument('-f', '--file', dest='rec_file', help='recording file name')
@@ -1182,16 +1204,16 @@ def parse_arguments():
     log_handler.setFormatter(formatter)
     logger.addHandler(log_handler)
     if args.log_file:
-        log_handler = logging.handlers.RotatingFileHandler(os.path.expanduser(args.log_file), maxBytes=500*1024, backupCount=1)
-        log_handler.setFormatter(formatter)
-        logger.addHandler(log_handler)
+        logfile_handler = logging.handlers.RotatingFileHandler(os.path.expanduser(args.log_file), maxBytes=500*1024, backupCount=1)
+        logfile_handler.setFormatter(formatter)
+        logger.addHandler(logfile_handler)
 
     logging.debug('Options: %s', args)
 
     return args
 
 
-def main():
+def main() -> None:
     """ Main entry function """
     opts = parse_arguments()
 
@@ -1234,7 +1256,7 @@ def main():
     elif opts.mode.lower() == "extract":
         res = transcoder.extract(vid_path)
     else:
-        status.set_error(f'Unsupported processing mode: \"{args.mode}\"')
+        status.set_error(f'Unsupported processing mode: \"{opts.mode}\"')
         sys.exit(4)
 
     if status.get_cmd() == Job.STOP:
